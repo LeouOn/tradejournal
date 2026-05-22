@@ -62,12 +62,14 @@ export default function AICoach({ accountId, onRefreshTrades }: AICoachProps) {
         
         if (data.token) {
           setMessages((prev) => {
-            const list = [...prev];
-            const last = list[list.length - 1];
+            const idx = prev.length - 1;
+            const last = prev[idx];
             if (last && last.role === "assistant") {
-              last.content += data.token;
+              const updated = [...prev];
+              updated[idx] = { ...last, content: last.content + data.token };
+              return updated;
             }
-            return list;
+            return prev;
           });
         }
 
@@ -80,12 +82,14 @@ export default function AICoach({ accountId, onRefreshTrades }: AICoachProps) {
       eventSource.onerror = (err) => {
         console.error("SSE Connection Error:", err);
         setMessages((prev) => {
-          const list = [...prev];
-          const last = list[list.length - 1];
+          const idx = prev.length - 1;
+          const last = prev[idx];
           if (last && last.role === "assistant" && !last.content) {
-            last.content = "Error connecting to AI Coach endpoint. Please make sure LM Studio is running on http://localhost:1234/v1 or that you have configured an OpenAI API key.";
+            const updated = [...prev];
+            updated[idx] = { ...last, content: "Error connecting to AI Coach endpoint. Please make sure LM Studio is running on http://localhost:1234/v1 or that you have configured an OpenAI API key." };
+            return updated;
           }
-          return list;
+          return prev;
         });
         eventSource.close();
         setIsTyping(false);

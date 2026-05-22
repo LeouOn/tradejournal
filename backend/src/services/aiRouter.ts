@@ -71,6 +71,27 @@ export async function generateEmbedding(text: string): Promise<number[]> {
  * Dynamically queries loaded models from LM Studio / OpenAI
  */
 export async function getAvailableModels(): Promise<string[]> {
+  // If we are pointing to LM Studio port 1234, try the native LM Studio v1 endpoint first
+  if (baseURL.includes("localhost:1234") || baseURL.includes("127.0.0.1:1234")) {
+    try {
+      const host = baseURL.replace(/\/v1\/?$/, "");
+      const res = await fetch(`${host}/api/v1/models`);
+      if (res.ok) {
+        const data = await res.json() as any;
+        if (data && Array.isArray(data.models)) {
+          // Filter type === "llm" if they exist, otherwise map all keys
+          const llms = data.models.filter((m: any) => m.type === "llm");
+          if (llms.length > 0) {
+            return llms.map((m: any) => m.key);
+          }
+          return data.models.map((m: any) => m.key);
+        }
+      }
+    } catch (err) {
+      console.warn("Failed to query native LM Studio models endpoint:", err);
+    }
+  }
+
   try {
     const list = await openai.models.list();
     return list.data.map((m) => m.id);
@@ -301,6 +322,72 @@ ${notesContext}
 `;
 
   try {
+    // If using local host, try the native LM Studio v1 endpoint first
+    if (baseURL.includes("localhost:1234") || baseURL.includes("127.0.0.1:1234")) {
+      try {
+        const host = baseURL.replace(/\/v1\/?$/, "");
+        const response = await fetch(`${host}/api/v1/chat`, {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            ...(apiKey && apiKey !== "lm-studio" ? { "Authorization": `Bearer ${apiKey}` } : {}),
+          },
+          body: JSON.stringify({
+            model: selectedModel,
+            input: userQuery,
+            system_prompt: systemPrompt,
+            stream: true,
+          }),
+        });
+
+        if (response.ok && response.body) {
+          const reader = response.body.getReader();
+          const decoder = new TextDecoder();
+          let buffer = "";
+          let fullText = "";
+          let currentEvent = "";
+
+          while (true) {
+            const { done, value } = await reader.read();
+            if (done) break;
+
+            buffer += decoder.decode(value, { stream: true });
+            const lines = buffer.split("\n");
+            buffer = lines.pop() || "";
+
+            for (const line of lines) {
+              const trimmed = line.trim();
+              if (trimmed.startsWith("event:")) {
+                currentEvent = trimmed.slice(6).trim();
+              } else if (trimmed.startsWith("data:")) {
+                const dataStr = trimmed.slice(5).trim();
+                if (dataStr) {
+                  try {
+                    const parsed = JSON.parse(dataStr);
+                    if ((currentEvent === "message.delta" || parsed.type === "message.delta") && parsed.content) {
+                      fullText += parsed.content;
+                      onToken(parsed.content);
+                    } else if ((currentEvent === "error" || parsed.type === "error") && parsed.message) {
+                      onToken(`[Error: ${parsed.message}]`);
+                    }
+                  } catch (e) {
+                    // Ignore parsing errors for incomplete chunks
+                  }
+                }
+              }
+            }
+          }
+          onComplete(fullText);
+          return; // Success, exit
+        } else {
+          console.warn(`Native LM Studio API returned status ${response.status}. Falling back to OpenAI compatible API.`);
+        }
+      } catch (nativeError) {
+        console.warn("Native LM Studio call failed, falling back to OpenAI compatible API:", nativeError);
+      }
+    }
+
+    // Fallback to OpenAI compatible streaming client
     const stream = await openai.chat.completions.create({
       model: selectedModel,
       messages: [
