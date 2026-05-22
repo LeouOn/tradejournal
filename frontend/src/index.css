@@ -1,0 +1,188 @@
+@import url('https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;500;600;700&display=swap');
+
+:root {
+  --bg-primary: #060c14;
+  --bg-secondary: #0d1624;
+  --bg-tertiary: #132238;
+  --text-primary: #f0f4f8;
+  --text-secondary: #4a7898;
+  --accent-blue: #00e5ff;
+  --accent-green: #00e676;
+  --accent-red: #ff2d55;
+  --accent-gold: #ffb700;
+  --border-color: rgba(74, 120, 152, 0.15);
+  --border-hover: rgba(0, 229, 255, 0.3);
+  --glass-bg: rgba(13, 22, 36, 0.7);
+  --glass-shadow: 0 8px 32px 0 rgba(0, 0, 0, 0.37);
+  --font-sans: 'Outfit', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+  --transition-fast: 0.2s cubic-bezier(0.4, 0, 0.2, 1);
+  --transition-normal: 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+}
+
+* {
+  box-sizing: border-box;
+  margin: 0;
+  padding: 0;
+  font-family: var(--font-sans);
+}
+
+body {
+  background-color: var(--bg-primary);
+  color: var(--text-primary);
+  overflow-x: hidden;
+  line-height: 1.5;
+}
+
+/* Custom Scrollbar */
+::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+::-webkit-scrollbar-track {
+  background: var(--bg-primary);
+}
+::-webkit-scrollbar-thumb {
+  background: var(--border-color);
+  border-radius: 4px;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: var(--text-secondary);
+}
+
+/* Glass Card styling */
+.glass-panel {
+  background: var(--glass-bg);
+  backdrop-filter: blur(12px);
+  -webkit-backdrop-filter: blur(12px);
+  border: 1px solid var(--border-color);
+  border-radius: 12px;
+  box-shadow: var(--glass-shadow);
+  padding: 20px;
+  transition: border-color var(--transition-fast), transform var(--transition-fast);
+}
+
+.glass-panel:hover {
+  border-color: rgba(74, 120, 152, 0.25);
+}
+
+.glass-panel.interactive:hover {
+  border-color: var(--border-hover);
+  transform: translateY(-2px);
+}
+
+/* Typography & Layout Utilities */
+h1, h2, h3, h4, h5, h6 {
+  font-weight: 600;
+  letter-spacing: -0.02em;
+}
+
+.title-gradient {
+  background: linear-gradient(135deg, #ffffff 0%, var(--accent-blue) 100%);
+  -webkit-background-clip: text;
+  -webkit-text-fill-color: transparent;
+}
+
+.metric-positive {
+  color: var(--accent-green);
+  text-shadow: 0 0 10px rgba(0, 230, 118, 0.15);
+}
+
+.metric-negative {
+  color: var(--accent-red);
+  text-shadow: 0 0 10px rgba(255, 45, 85, 0.15);
+}
+
+.metric-neutral {
+  color: var(--accent-gold);
+}
+
+/* Buttons */
+.btn-primary {
+  background: linear-gradient(135deg, #00b0ff 0%, var(--accent-blue) 100%);
+  color: #060c14;
+  border: none;
+  border-radius: 8px;
+  padding: 10px 20px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: transform var(--transition-fast), opacity var(--transition-fast);
+}
+.btn-primary:hover {
+  transform: scale(1.02);
+  opacity: 0.95;
+}
+.btn-primary:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.btn-secondary {
+  background: transparent;
+  color: var(--text-primary);
+  border: 1px solid var(--border-color);
+  border-radius: 8px;
+  padding: 10px 20px;
+  font-weight: 500;
+  cursor: pointer;
+  transition: border-color var(--transition-fast), background var(--transition-fast);
+}
+.btn-secondary:hover {
+  border-color: var(--accent-blue);
+  background: rgba(0, 229, 255, 0.05);
+}
+
+/* Input Fields */
+.input-field {
+  background: rgba(13, 22, 36, 0.5);
+  border: 1px solid var(--border-color);
+  border-radius: 8px;
+  color: var(--text-primary);
+  padding: 10px 14px;
+  outline: none;
+  width: 100%;
+  transition: border-color var(--transition-fast);
+}
+.input-field:focus {
+  border-color: var(--accent-blue);
+}
+
+.label-text {
+  font-size: 0.85rem;
+  color: var(--text-secondary);
+  margin-bottom: 6px;
+  display: block;
+}
+
+/* Animations */
+@keyframes pulseGlow {
+  0% { box-shadow: 0 0 5px rgba(0, 229, 255, 0.2); }
+  50% { box-shadow: 0 0 15px rgba(0, 229, 255, 0.4); }
+  100% { box-shadow: 0 0 5px rgba(0, 229, 255, 0.2); }
+}
+.glow-effect {
+  animation: pulseGlow 3s infinite;
+}
+
+@keyframes typewriter {
+  from { width: 0; }
+  to { width: 100%; }
+}
+
+/* Grid Layouts */
+.dashboard-grid {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: 20px;
+  margin-bottom: 20px;
+}
+
+@media (max-width: 1024px) {
+  .dashboard-grid {
+    grid-template-columns: repeat(2, 1fr);
+  }
+}
+@media (max-width: 640px) {
+  .dashboard-grid {
+    grid-template-columns: 1fr;
+  }
+}
