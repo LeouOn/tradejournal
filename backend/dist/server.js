@@ -45,6 +45,17 @@ let currentMarketRegime = {
     vix_level: 14.5,
     fed_funds_rate: 5.25,
     spx_trend: "ABOVE_200SMA",
+    spx_close: 5800,
+    spx_200sma: 5600,
+    spx_dist_200sma: 3.57,
+    atr_ratio: 0.012,
+    spx_5d_return: 0.45,
+    spx_20d_return: 2.1,
+    spx_60d_return: 5.8,
+    vix_percentile: 22,
+    regime_date: new Date().toISOString().split("T")[0],
+    regime_description: "Market regime classification pending. Run the ML pipeline (npm run ml:run) to populate with live data.",
+    state_profiles: [],
 };
 /**
  * ----------------------------------------------------
@@ -680,13 +691,7 @@ app.post("/api/tags", async (req, res) => {
  * ----------------------------------------------------
  */
 app.post("/api/market/regime", (req, res) => {
-    const { regime_type, vix_level, fed_funds_rate, spx_trend } = req.body;
-    currentMarketRegime = {
-        regime_type: regime_type || currentMarketRegime.regime_type,
-        vix_level: vix_level ? Number(vix_level) : currentMarketRegime.vix_level,
-        fed_funds_rate: fed_funds_rate ? Number(fed_funds_rate) : currentMarketRegime.fed_funds_rate,
-        spx_trend: spx_trend || currentMarketRegime.spx_trend,
-    };
+    currentMarketRegime = { ...currentMarketRegime, ...req.body };
     res.json({ status: "success", currentMarketRegime });
     broadcast({ type: "REGIME_SHIFT", regime: currentMarketRegime });
 });

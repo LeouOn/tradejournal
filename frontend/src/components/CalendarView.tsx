@@ -66,18 +66,18 @@ export default function CalendarView({ trades }: CalendarViewProps) {
     const pnl = dayDetails.pnl;
     if (pnl > 0.01) {
       return {
-        background: "rgba(0, 230, 118, 0.12)",
-        border: "1px solid rgba(0, 230, 118, 0.3)",
+        background: "var(--green-bg-strong)",
+        border: "1px solid var(--green-border)",
         color: "var(--accent-green)",
       };
     } else if (pnl < -0.01) {
       return {
-        background: "rgba(255, 45, 85, 0.12)",
-        border: "1px solid rgba(255, 45, 85, 0.3)",
+        background: "var(--red-bg-strong)",
+        border: "1px solid var(--red-border)",
         color: "var(--accent-red)",
       };
     }
-    return { background: "rgba(74, 120, 152, 0.08)", color: "var(--text-primary)" };
+    return { background: "var(--neutral-bg)", color: "var(--text-primary)" };
   };
 
   return (

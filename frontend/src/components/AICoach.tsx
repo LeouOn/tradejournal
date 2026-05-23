@@ -172,10 +172,10 @@ export default function AICoach({ accountId, onRefreshTrades }: AICoachProps) {
   };
 
   const diagnosticSuggestions = [
-    { label: "Friday Performance Audit", query: "Why am I consistently losing money on Friday mornings?" },
-    { label: "Rule Breaches Cost Analysis", query: "Analyze my rule adherence and calculate the total cost of my broken rules." },
-    { label: "Market Regime Performance", query: "How does my expectancy perform in Bearish - High Volatility regimes vs Bullish - Low Volatility?" },
-    { label: "Scale scaling audit", query: "Am I scaling entries/exits effectively or taking unnecessary slippage on average?" },
+    { label: "Performance Snapshot", query: "Give me a full breakdown of my current performance stats, expectancy, and where my edge is strongest." },
+    { label: "Rule Adherence Audit", query: "Analyze my rule adherence, identify any violations, and calculate the cost of indiscipline across my trades." },
+    { label: "Regime vs. Expectancy", query: "Compare my expectancy across different market regimes. Where am I profitable and where am I bleeding?" },
+    { label: "Execution Quality Review", query: "Audit my execution quality: slippage, fill timing, position sizing, and whether my scaling is helping or hurting expectancy." },
   ];
 
   return (
@@ -196,7 +196,7 @@ export default function AICoach({ accountId, onRefreshTrades }: AICoachProps) {
               style={{
                 alignSelf: m.role === "user" ? "flex-end" : "flex-start",
                 maxWidth: "80%",
-                background: m.role === "user" ? "rgba(0, 229, 255, 0.1)" : "rgba(19, 34, 56, 0.5)",
+                background: m.role === "user" ? "var(--msg-user-bg)" : "var(--msg-assistant-bg)",
                 border: `1px solid ${m.role === "user" ? "var(--accent-blue)" : "var(--border-color)"}`,
                 borderRadius: "12px",
                 padding: "10px 14px",
@@ -311,8 +311,8 @@ export default function AICoach({ accountId, onRefreshTrades }: AICoachProps) {
                 style={{
                   padding: "10px 14px",
                   marginBottom: "16px",
-                  backgroundColor: "rgba(255, 45, 85, 0.05)",
-                  borderColor: "rgba(255, 45, 85, 0.3)",
+                  backgroundColor: "var(--red-bg)",
+                  borderColor: "var(--red-border)",
                   borderWidth: "1px",
                   borderStyle: "solid"
                 }}
@@ -332,8 +332,8 @@ export default function AICoach({ accountId, onRefreshTrades }: AICoachProps) {
                 style={{
                   padding: "10px 14px",
                   marginBottom: "16px",
-                  backgroundColor: syncStatus.success ? "rgba(0, 230, 118, 0.05)" : "rgba(255, 45, 85, 0.05)",
-                  borderColor: syncStatus.success ? "rgba(0, 230, 118, 0.3)" : "rgba(255, 45, 85, 0.3)",
+                  backgroundColor: syncStatus.success ? "var(--green-bg)" : "var(--red-bg)",
+                  borderColor: syncStatus.success ? "var(--green-border)" : "var(--red-border)",
                   borderWidth: "1px",
                   borderStyle: "solid"
                 }}
@@ -375,7 +375,7 @@ export default function AICoach({ accountId, onRefreshTrades }: AICoachProps) {
               </div>
             </div>
 
-            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: "10px 14px", background: "rgba(0, 229, 255, 0.05)", border: "1px solid var(--border-hover)", borderRadius: "8px", marginBottom: "16px" }}>
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: "10px 14px", background: "var(--accent-bg)", border: "1px solid var(--border-hover)", borderRadius: "8px", marginBottom: "16px" }}>
               <span style={{ fontSize: "0.85rem", color: "var(--text-primary)" }}>Net Execution Slippage:</span>
               <span style={{ fontSize: "1rem", fontWeight: "bold", color: analysisReport.summary.totalSlippage >= 0 ? "var(--accent-green)" : "var(--accent-red)" }}>
                 {analysisReport.summary.totalSlippage > 0 ? "+" : ""}{analysisReport.summary.totalSlippage.toFixed(2)} pts
@@ -398,7 +398,7 @@ export default function AICoach({ accountId, onRefreshTrades }: AICoachProps) {
                   {analysisReport.matched.map((m: any, idx: number) => (
                     <tr key={`matched-${idx}`} style={{ borderBottom: "1px solid var(--border-color)" }}>
                       <td style={{ padding: "10px" }}>
-                        <span style={{ display: "inline-block", padding: "2px 6px", borderRadius: "4px", fontSize: "0.7rem", fontWeight: "bold", background: "rgba(0, 230, 118, 0.1)", color: "var(--accent-green)", border: "1px solid rgba(0, 230, 118, 0.2)" }}>
+                        <span style={{ display: "inline-block", padding: "2px 6px", borderRadius: "4px", fontSize: "0.7rem", fontWeight: "bold", background: "var(--green-bg-strong)", color: "var(--accent-green)", border: "1px solid var(--green-border)" }}>
                           Matched
                         </span>
                       </td>
@@ -420,7 +420,7 @@ export default function AICoach({ accountId, onRefreshTrades }: AICoachProps) {
                   {analysisReport.ghosts.map((g: any, idx: number) => (
                     <tr key={`ghost-${idx}`} style={{ borderBottom: "1px solid var(--border-color)" }}>
                       <td style={{ padding: "10px" }}>
-                        <span style={{ display: "inline-block", padding: "2px 6px", borderRadius: "4px", fontSize: "0.7rem", fontWeight: "bold", background: "rgba(255, 183, 0, 0.1)", color: "var(--accent-gold)", border: "1px solid rgba(255, 183, 0, 0.2)" }}>
+                        <span style={{ display: "inline-block", padding: "2px 6px", borderRadius: "4px", fontSize: "0.7rem", fontWeight: "bold", background: "var(--gold-bg)", color: "var(--accent-gold)", border: "1px solid rgba(255, 183, 0, 0.2)" }}>
                           Ghost
                         </span>
                       </td>
@@ -442,7 +442,7 @@ export default function AICoach({ accountId, onRefreshTrades }: AICoachProps) {
                   {analysisReport.orphans.map((o: any, idx: number) => (
                     <tr key={`orphan-${idx}`} style={{ borderBottom: "1px solid var(--border-color)" }}>
                       <td style={{ padding: "10px" }}>
-                        <span style={{ display: "inline-block", padding: "2px 6px", borderRadius: "4px", fontSize: "0.7rem", fontWeight: "bold", background: "rgba(255, 45, 85, 0.1)", color: "var(--accent-red)", border: "1px solid rgba(255, 45, 85, 0.2)" }}>
+                        <span style={{ display: "inline-block", padding: "2px 6px", borderRadius: "4px", fontSize: "0.7rem", fontWeight: "bold", background: "var(--red-bg-strong)", color: "var(--accent-red)", border: "1px solid var(--red-border)" }}>
                           Orphan
                         </span>
                       </td>

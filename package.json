@@ -9,8 +9,8 @@
     "dev": "concurrently \"npm run dev:backend\" \"npm run dev:frontend\"",
     "db:up": "docker-compose up -d",
     "db:down": "docker-compose down",
-    "ml:setup": "uv venv ml_pipeline/.venv && uv pip install -r ml_pipeline/requirements.txt",
-    "ml:run": "uv run ml_pipeline/regime_classifier.py"
+    "ml:setup": "%LOCALAPPDATA%\\Microsoft\\WinGet\\Packages\\astral-sh.uv_Microsoft.Winget.Source_8wekyb3d8bbwe\\uv.exe venv ml_pipeline/.venv && %LOCALAPPDATA%\\Microsoft\\WinGet\\Packages\\astral-sh.uv_Microsoft.Winget.Source_8wekyb3d8bbwe\\uv.exe pip install --python ml_pipeline/.venv/Scripts/python.exe -r ml_pipeline/requirements.txt",
+    "ml:run": "ml_pipeline\\.venv\\Scripts\\python.exe ml_pipeline/regime_classifier.py"
   },
   "devDependencies": {
     "concurrently": "^8.2.2"

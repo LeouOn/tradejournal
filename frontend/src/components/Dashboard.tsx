@@ -703,7 +703,7 @@ export default function Dashboard({
                 padding: "4px 8px",
                 fontSize: "0.75rem",
                 border: displayUnit === unit ? "1px solid var(--accent-blue)" : "1px solid transparent",
-                backgroundColor: displayUnit === unit ? "rgba(0, 229, 255, 0.1)" : "transparent"
+                backgroundColor: displayUnit === unit ? "var(--accent-bg-strong)" : "transparent"
               }}
               onClick={() => setDisplayUnit(unit)}
             >
@@ -743,7 +743,7 @@ export default function Dashboard({
           </label>
           <button 
             className="btn-secondary"
-            style={{ display: "flex", alignItems: "center", gap: "6px", color: "var(--accent-blue)", borderColor: "rgba(0,229,255,0.3)" }}
+            style={{ display: "flex", alignItems: "center", gap: "6px", color: "var(--accent-blue)", borderColor: "var(--border-hover)" }}
             onClick={handleSimulateTrade}
           >
             <Play size={16} />
@@ -768,7 +768,7 @@ export default function Dashboard({
         return (
           <>
             {todayPnl >= Number(profitTarget) && Number(profitTarget) > 0 && (
-              <div className="glass-panel glow-effect" style={{ marginBottom: "20px", border: "1px solid var(--accent-green)", background: "rgba(0, 230, 118, 0.08)", padding: "12px 20px" }}>
+              <div className="glass-panel glow-effect" style={{ marginBottom: "20px", border: "1px solid var(--accent-green)", background: "var(--green-bg)", padding: "12px 20px" }}>
                 <div style={{ display: "flex", alignItems: "center", gap: "10px" }}>
                   <Flame size={20} style={{ color: "var(--accent-green)" }} />
                   <div>
@@ -781,7 +781,7 @@ export default function Dashboard({
               </div>
             )}
             {todayPnl <= -Number(maxLoss) && Number(maxLoss) > 0 && (
-              <div className="glass-panel glow-effect" style={{ marginBottom: "20px", border: "1px solid var(--accent-red)", background: "rgba(255, 45, 85, 0.08)", padding: "12px 20px" }}>
+              <div className="glass-panel glow-effect" style={{ marginBottom: "20px", border: "1px solid var(--accent-red)", background: "var(--red-bg)", padding: "12px 20px" }}>
                 <div style={{ display: "flex", alignItems: "center", gap: "10px" }}>
                   <EyeOff size={20} style={{ color: "var(--accent-red)" }} />
                   <div>
@@ -827,7 +827,7 @@ export default function Dashboard({
               className="btn-secondary"
               style={{
                 borderColor: entryMode === "quick" ? "var(--accent-blue)" : "transparent",
-                background: entryMode === "quick" ? "rgba(0, 229, 255, 0.08)" : "transparent",
+                background: entryMode === "quick" ? "var(--accent-bg)" : "transparent",
                 padding: "6px 12px",
                 fontSize: "0.8rem",
                 color: entryMode === "quick" ? "var(--accent-blue)" : "var(--text-secondary)"
@@ -841,7 +841,7 @@ export default function Dashboard({
               className="btn-secondary"
               style={{
                 borderColor: entryMode === "advanced" ? "var(--accent-blue)" : "transparent",
-                background: entryMode === "advanced" ? "rgba(0, 229, 255, 0.08)" : "transparent",
+                background: entryMode === "advanced" ? "var(--accent-bg)" : "transparent",
                 padding: "6px 12px",
                 fontSize: "0.8rem",
                 color: entryMode === "advanced" ? "var(--accent-blue)" : "var(--text-secondary)"
@@ -1160,7 +1160,7 @@ export default function Dashboard({
         </div>
 
         {/* Zella Score Gauge */}
-        <div className="glass-panel glow-effect" style={{ display: "flex", flexDirection: "column", justifyContent: "space-between", border: "1px solid rgba(0, 229, 255, 0.2)" }}>
+        <div className="glass-panel glow-effect" style={{ display: "flex", flexDirection: "column", justifyContent: "space-between", border: "1px solid var(--border-hover)" }}>
           <div>
             <span className="label-text" style={{ color: "var(--accent-blue)" }}>Zella Performance Score</span>
             <h2 style={{ fontSize: "2.2rem", fontWeight: "bold", background: "linear-gradient(135deg, #00e5ff 0%, #00e676 100%)", WebkitBackgroundClip: "text", WebkitTextFillColor: "transparent" }}>
@@ -1178,7 +1178,7 @@ export default function Dashboard({
       <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(280px, 1fr))", gap: "20px", marginBottom: "20px" }}>
         {/* Streak component */}
         <div className="glass-panel" style={{ display: "flex", alignItems: "center", gap: "16px" }}>
-          <div style={{ padding: "12px", background: activeStreak > 0 ? "rgba(255, 183, 0, 0.1)" : "rgba(74, 120, 152, 0.1)", borderRadius: "50%", color: activeStreak > 0 ? "var(--accent-gold)" : "var(--text-secondary)" }}>
+          <div style={{ padding: "12px", background: activeStreak > 0 ? "var(--gold-bg)" : "var(--neutral-bg)", borderRadius: "50%", color: activeStreak > 0 ? "var(--accent-gold)" : "var(--text-secondary)" }}>
             <Flame size={24} className={activeStreak > 0 ? "glow-effect" : ""} style={{ fill: activeStreak > 0 ? "var(--accent-gold)" : "transparent" }} />
           </div>
           <div>
@@ -1190,8 +1190,8 @@ export default function Dashboard({
         </div>
 
         {/* Cost of indiscipline warnings */}
-        <div className="glass-panel" style={{ display: "flex", alignItems: "center", gap: "16px", border: stats.costOfIndiscipline > 0 ? "1px solid rgba(255, 45, 85, 0.2)" : "1px solid var(--border-color)" }}>
-          <div style={{ padding: "12px", background: stats.costOfIndiscipline > 0 ? "rgba(255, 45, 85, 0.1)" : "rgba(0, 230, 118, 0.1)", borderRadius: "50%", color: stats.costOfIndiscipline > 0 ? "var(--accent-red)" : "var(--accent-green)" }}>
+        <div className="glass-panel" style={{ display: "flex", alignItems: "center", gap: "16px", border: stats.costOfIndiscipline > 0 ? "1px solid var(--red-border)" : "1px solid var(--border-color)" }}>
+          <div style={{ padding: "12px", background: stats.costOfIndiscipline > 0 ? "var(--red-bg-strong)" : "var(--green-bg-strong)", borderRadius: "50%", color: stats.costOfIndiscipline > 0 ? "var(--accent-red)" : "var(--accent-green)" }}>
             <Award size={24} />
           </div>
           <div>
@@ -1268,7 +1268,7 @@ export default function Dashboard({
                   const regime = t.market_context[0]?.regime_type || "Unknown";
                   const remainingContracts = getRemainingQuantity(t.executions);
                   return (
-                    <tr key={t.trade_id} style={{ borderBottom: "1px solid rgba(74, 120, 152, 0.08)", fontSize: "0.9rem" }}>
+                    <tr key={t.trade_id} style={{ borderBottom: "1px solid var(--neutral-bg)", fontSize: "0.9rem" }}>
                       <td style={{ padding: "12px 8px", color: "var(--text-secondary)" }}>
                         {new Date(t.created_at).toLocaleString(undefined, { dateStyle: "short", timeStyle: "short" })}
                       </td>
@@ -1282,7 +1282,7 @@ export default function Dashboard({
                               padding: "2px 6px",
                               fontSize: "0.75rem",
                               borderRadius: "4px",
-                              backgroundColor: t.status === "CLOSED" ? "rgba(74, 120, 152, 0.1)" : "rgba(0, 229, 255, 0.1)",
+                              backgroundColor: t.status === "CLOSED" ? "var(--neutral-bg)" : "var(--accent-bg-strong)",
                               color: t.status === "CLOSED" ? "var(--text-secondary)" : "var(--accent-blue)",
                               cursor: "pointer",
                               border: "1px solid transparent",
@@ -1294,7 +1294,7 @@ export default function Dashboard({
                             {t.status}
                           </span>
                           {t.status === "OPEN" && remainingContracts > 0 && (
-                            <span style={{ fontSize: "0.75rem", color: "var(--accent-gold)", backgroundColor: "rgba(255, 183, 0, 0.1)", padding: "2px 6px", borderRadius: "4px", fontWeight: "bold" }}>
+                            <span style={{ fontSize: "0.75rem", color: "var(--accent-gold)", backgroundColor: "var(--gold-bg)", padding: "2px 6px", borderRadius: "4px", fontWeight: "bold" }}>
                               {remainingContracts} rem
                             </span>
                           )}
@@ -1369,7 +1369,7 @@ export default function Dashboard({
           left: 0,
           right: 0,
           bottom: 0,
-          background: "rgba(6, 12, 20, 0.85)",
+          background: "var(--overlay-bg)",
           backdropFilter: "blur(8px)",
           display: "flex",
           justifyContent: "center",
@@ -1382,8 +1382,8 @@ export default function Dashboard({
             maxWidth: "680px",
             maxHeight: "90vh",
             overflowY: "auto",
-            border: "1px solid rgba(0, 229, 255, 0.3)",
-            boxShadow: "0 0 24px rgba(0, 229, 255, 0.2)",
+            border: "1px solid var(--border-hover)",
+            boxShadow: "0 0 24px var(--border-hover)",
             padding: "24px",
             position: "relative"
           }}>
@@ -1578,7 +1578,7 @@ export default function Dashboard({
               <button
                 type="button"
                 className="btn-secondary"
-                style={{ color: "var(--accent-red)", borderColor: "rgba(255, 45, 85, 0.3)" }}
+                style={{ color: "var(--accent-red)", borderColor: "var(--red-border)" }}
                 onClick={() => handleDeleteTrade(editingTrade.trade_id)}
               >
                 Delete Trade

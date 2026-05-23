@@ -225,7 +225,7 @@ export default function TradeReplay({ trade }: TradeReplayProps) {
                 padding: "2px 6px",
                 fontSize: "0.7rem",
                 borderColor: playbackSpeed === speed ? "var(--accent-blue)" : "var(--border-color)",
-                backgroundColor: playbackSpeed === speed ? "rgba(0, 229, 255, 0.1)" : "transparent"
+                backgroundColor: playbackSpeed === speed ? "var(--accent-bg-strong)" : "transparent"
               }}
               onClick={() => setPlaybackSpeed(speed)}
             >
@@ -242,7 +242,7 @@ export default function TradeReplay({ trade }: TradeReplayProps) {
           style={{ width: "100%", height: "100%", display: "block" }}
         />
         {currentProgress === 0 && (
-          <div style={{ position: "absolute", inset: 0, display: "flex", justifyContent: "center", alignItems: "center", background: "rgba(6, 12, 20, 0.7)", backdropFilter: "blur(2px)" }}>
+          <div style={{ position: "absolute", inset: 0, display: "flex", justifyContent: "center", alignItems: "center", background: "var(--overlay-bg)", backdropFilter: "blur(2px)" }}>
             <button className="btn-primary" style={{ display: "flex", alignItems: "center", gap: "8px" }} onClick={() => setIsPlaying(true)}>
               <Play size={16} /> Click to Play Execution Replay
             </button>

@@ -247,7 +247,7 @@ export default function PerformanceCharts({ trades, initialBalance }: Performanc
                   <stop offset="95%" stopColor="var(--accent-blue)" stopOpacity={0.0}/>
                 </linearGradient>
               </defs>
-              <CartesianGrid strokeDasharray="3 3" stroke="rgba(74, 120, 152, 0.08)" />
+              <CartesianGrid strokeDasharray="3 3" stroke="var(--neutral-bg)" />
               <XAxis dataKey="name" stroke="var(--text-secondary)" fontSize={11} />
               <YAxis stroke="var(--text-secondary)" fontSize={11} domain={['dataMin - 500', 'dataMax + 500']} tickFormatter={(v) => `$${v}`} />
               <Tooltip content={<CustomTooltip />} />
@@ -265,7 +265,7 @@ export default function PerformanceCharts({ trades, initialBalance }: Performanc
           <div style={{ width: "100%", height: 220 }}>
             <ResponsiveContainer>
               <LineChart data={chartData} margin={{ top: 5, right: 20, left: 0, bottom: 5 }}>
-                <CartesianGrid strokeDasharray="3 3" stroke="rgba(74, 120, 152, 0.08)" />
+                <CartesianGrid strokeDasharray="3 3" stroke="var(--neutral-bg)" />
                 <XAxis dataKey="name" stroke="var(--text-secondary)" fontSize={10} />
                 <YAxis stroke="var(--text-secondary)" fontSize={10} domain={[0, 100]} tickFormatter={(v) => `${v}%`} />
                 <Tooltip />
@@ -281,7 +281,7 @@ export default function PerformanceCharts({ trades, initialBalance }: Performanc
           <div style={{ width: "100%", height: 220 }}>
             <ResponsiveContainer>
               <LineChart data={chartData} margin={{ top: 5, right: 20, left: 0, bottom: 5 }}>
-                <CartesianGrid strokeDasharray="3 3" stroke="rgba(74, 120, 152, 0.08)" />
+                <CartesianGrid strokeDasharray="3 3" stroke="var(--neutral-bg)" />
                 <XAxis dataKey="name" stroke="var(--text-secondary)" fontSize={10} />
                 <YAxis stroke="var(--text-secondary)" fontSize={10} domain={[0, 'dataMax + 0.5']} />
                 <Tooltip />
@@ -305,7 +305,7 @@ export default function PerformanceCharts({ trades, initialBalance }: Performanc
             <div style={{ width: "100%", height: 180 }}>
               <ResponsiveContainer>
                 <BarChart data={overtradingChartData} margin={{ top: 10, right: 20, left: 0, bottom: 5 }}>
-                  <CartesianGrid strokeDasharray="3 3" stroke="rgba(74, 120, 152, 0.08)" />
+                  <CartesianGrid strokeDasharray="3 3" stroke="var(--neutral-bg)" />
                   <XAxis dataKey="name" stroke="var(--text-secondary)" fontSize={10} />
                   <YAxis stroke="var(--text-secondary)" fontSize={10} />
                   <Tooltip formatter={(value) => [`$${value}`, "Avg P&L"]} />
@@ -326,7 +326,7 @@ export default function PerformanceCharts({ trades, initialBalance }: Performanc
             padding: "8px 12px",
             borderRadius: "6px",
             marginTop: "12px",
-            border: `1px solid ${overtradingBuckets.high.daysCount > 0 && overtradingBuckets.high.totalPnl / overtradingBuckets.high.daysCount < 0 ? "rgba(255, 45, 85, 0.2)" : "var(--border-color)"}`
+            border: `1px solid ${overtradingBuckets.high.daysCount > 0 && overtradingBuckets.high.totalPnl / overtradingBuckets.high.daysCount < 0 ? "var(--red-border)" : "var(--border-color)"}`
           }}>
             {overtradingText}
           </div>
@@ -341,7 +341,7 @@ export default function PerformanceCharts({ trades, initialBalance }: Performanc
           <div style={{ width: "100%", height: 180 }}>
             <ResponsiveContainer>
               <BarChart data={setupChartData} margin={{ top: 10, right: 20, left: 0, bottom: 5 }}>
-                <CartesianGrid strokeDasharray="3 3" stroke="rgba(74, 120, 152, 0.08)" />
+                <CartesianGrid strokeDasharray="3 3" stroke="var(--neutral-bg)" />
                 <XAxis dataKey="name" stroke="var(--text-secondary)" fontSize={10} />
                 <YAxis stroke="var(--text-secondary)" fontSize={10} />
                 <Tooltip formatter={(value, name) => [name === "pnl" ? `$${value}` : `${value}%`, name === "pnl" ? "Total P&L" : "Win Rate"]} />
@@ -375,7 +375,7 @@ export default function PerformanceCharts({ trades, initialBalance }: Performanc
           <div style={{ width: "100%", height: 180 }}>
             <ResponsiveContainer>
               <BarChart data={biasChartData} margin={{ top: 10, right: 20, left: 0, bottom: 5 }}>
-                <CartesianGrid strokeDasharray="3 3" stroke="rgba(74, 120, 152, 0.08)" />
+                <CartesianGrid strokeDasharray="3 3" stroke="var(--neutral-bg)" />
                 <XAxis dataKey="name" stroke="var(--text-secondary)" fontSize={10} />
                 <YAxis stroke="var(--text-secondary)" fontSize={10} />
                 <Tooltip formatter={(value, name) => [name === "pnl" ? `$${value}` : `${value}%`, name === "pnl" ? "Total P&L" : "Win Rate"]} />
@@ -395,7 +395,7 @@ export default function PerformanceCharts({ trades, initialBalance }: Performanc
           <div style={{ width: "100%", height: 180 }}>
             <ResponsiveContainer>
               <BarChart data={reversalChartData} margin={{ top: 10, right: 20, left: 0, bottom: 5 }}>
-                <CartesianGrid strokeDasharray="3 3" stroke="rgba(74, 120, 152, 0.08)" />
+                <CartesianGrid strokeDasharray="3 3" stroke="var(--neutral-bg)" />
                 <XAxis dataKey="name" stroke="var(--text-secondary)" fontSize={10} />
                 <YAxis stroke="var(--text-secondary)" fontSize={10} />
                 <Tooltip formatter={(value, name) => [name === "pnl" ? `$${value}` : `${value}%`, name === "pnl" ? "Total P&L" : "Win Rate"]} />

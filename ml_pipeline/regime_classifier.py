@@ -2,6 +2,7 @@ import os
 import sys
 import json
 import datetime
+import time
 import numpy as np
 import pandas as pd
 import requests
@@ -96,11 +97,31 @@ def main():
     end_str = end_date.strftime("%Y-%m-%d")
 
     print(f"Downloading historical index data from Yahoo Finance ({start_str} to {end_str})...")
-    try:
-        spx = yf.download("^SPX", start=start_str, end=end_str)
-        vix = yf.download("^VIX", start=start_str, end=end_str)
-    except Exception as e:
-        print(f"Critical error downloading data from Yahoo Finance: {e}")
+
+    def download_with_retry(ticker, start, end, max_retries=3, timeout=30):
+        for attempt in range(1, max_retries + 1):
+            try:
+                print(f"  [{ticker}] Attempt {attempt}/{max_retries}...")
+                df = yf.download(ticker, start=start, end=end, timeout=timeout)
+                if not df.empty:
+                    return df
+                print(f"  [{ticker}] Got empty data, retrying...")
+            except Exception as e:
+                print(f"  [{ticker}] Error: {e}")
+            if attempt < max_retries:
+                wait = attempt * 5
+                print(f"  Waiting {wait}s before retry...")
+                time.sleep(wait)
+        return pd.DataFrame()
+
+    spx = download_with_retry("^SPX", start_str, end_str)
+    if spx.empty:
+        print("Failed to download SPX data after retries. Exiting.")
+        sys.exit(1)
+
+    vix = download_with_retry("^VIX", start_str, end_str)
+    if vix.empty:
+        print("Failed to download VIX data after retries. Exiting.")
         sys.exit(1)
 
     if spx.empty or vix.empty:
@@ -221,18 +242,64 @@ def main():
     if not fed_df.empty:
         current_fed = float(fed_df.iloc[-1]["FEDFUNDS"])
 
+    # Calculate recent performance windows
+    last5 = data_clean["SPX_Return"].tail(5).sum() * 100
+    last20 = data_clean["SPX_Return"].tail(20).sum() * 100
+    last60 = data_clean["SPX_Return"].tail(60).sum() * 100
+    current_atr = float(current_row["ATR_Ratio"]) * 100
+
+    # VIX percentile vs 5-year history
+    vix_history = data_clean["VIX_Close"].values
+    vix_percentile = float(np.sum(vix_history < current_vix) / len(vix_history) * 100)
+
+    # Build state profiles for display
+    state_profiles = []
+    for idx, name in state_names.items():
+        state_data = data_clean[data_clean["State"] == idx]
+        pct_of_history = len(state_data) / len(data_clean) * 100
+        state_profiles.append({
+            "name": name,
+            "avg_vix": round(float(state_data["VIX_Close"].mean()), 2),
+            "avg_return": round(float(state_data["SPX_Return"].mean()) * 100, 4),
+            "avg_dist_200sma": round(float(state_data["Dist_200SMA"].mean()) * 100, 2),
+            "pct_of_history": round(pct_of_history, 1),
+            "is_current": idx == current_state_idx,
+        })
+
+    # Generate human-readable explanation
+    dist_200sma = (spx_close - spx_200) / spx_200 * 100
+    regime_description = (
+        f"Classified as \"{current_regime}\" based on 4-state Gaussian HMM trained on 5 years of daily data. "
+        f"Current inputs: SPX at {spx_close:.0f} ({spx_trend.replace('_', ' ').lower()}, {dist_200sma:+.1f}% from 200 SMA), "
+        f"VIX at {current_vix:.1f} ({vix_percentile:.0f}th percentile over 5 years), "
+        f"20-day ATR ratio at {current_atr:.2f}%, Fed Funds at {current_fed:.2f}%. "
+        f"Recent returns: 5D {last5:+.2f}%, 20D {last20:+.2f}%, 60D {last60:+.2f}%."
+    )
+
     print(f"\nCurrent Market State Classified:")
     print(f" - Regime Type: {current_regime}")
     print(f" - S&P 500 Close: {spx_close:.2f} ({spx_trend})")
     print(f" - VIX Volatility index: {current_vix:.2f}")
     print(f" - Fed Funds Rate: {current_fed:.2f}%")
+    print(f" - Regime Explanation: {regime_description}")
 
     # Post results to Express server
     payload = {
       "regime_type": current_regime,
       "vix_level": current_vix,
       "fed_funds_rate": current_fed,
-      "spx_trend": spx_trend
+      "spx_trend": spx_trend,
+      "spx_close": round(spx_close, 2),
+      "spx_200sma": round(spx_200, 2),
+      "spx_dist_200sma": round(dist_200sma, 2),
+      "atr_ratio": round(current_atr, 2),
+      "spx_5d_return": round(last5, 2),
+      "spx_20d_return": round(last20, 2),
+      "spx_60d_return": round(last60, 2),
+      "vix_percentile": round(vix_percentile, 1),
+      "regime_date": datetime.date.today().isoformat(),
+      "regime_description": regime_description,
+      "state_profiles": state_profiles,
     }
 
     try:

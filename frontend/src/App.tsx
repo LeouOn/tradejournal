@@ -1,7 +1,7 @@
 import { useState, useEffect } from "react";
 import { 
   TrendingUp, BarChart3, Calendar as CalendarIcon, 
-  RefreshCw, Play, Brain, Activity
+  RefreshCw, Play, Brain, Activity, Settings as SettingsIcon
 } from "lucide-react";
 import Dashboard from "./components/Dashboard";
 import type { Trade, Stats } from "./components/Dashboard";
@@ -9,8 +9,12 @@ import PerformanceCharts from "./components/PerformanceCharts";
 import CalendarView from "./components/CalendarView";
 import TradeReplay from "./components/TradeReplay";
 import AICoach from "./components/AICoach";
+import Settings from "./components/Settings";
+import MarketAnalysis from "./components/MarketAnalysis";
+import { useSettings } from "./contexts/SettingsContext";
 
 export default function App() {
+  const { settings } = useSettings();
   const [activeTab, setActiveTab] = useState<string>("dashboard");
   const [accountId, setAccountId] = useState<string>("");
   const [accountBalance, setAccountBalance] = useState<number>(50000);
@@ -31,7 +35,8 @@ export default function App() {
   });
 
   const [selectedTrade, setSelectedTrade] = useState<Trade | null>(null);
-  const [marketRegime, setMarketRegime] = useState<string>("Bullish - Low Volatility");
+  const [marketRegime, setMarketRegime] = useState<Record<string, any>>({ regime_type: "Bullish - Low Volatility" });
+  const [showMarketAnalysis, setShowMarketAnalysis] = useState(false);
   const [wsStatus, setWsStatus] = useState<"connected" | "disconnected">("disconnected");
 
   // 1. Fetch or initialize default account
@@ -76,7 +81,7 @@ export default function App() {
 
       const regimeRes = await fetch("http://localhost:5000/api/market/regime");
       const regimeData = await regimeRes.json();
-      setMarketRegime(regimeData.regime_type);
+      setMarketRegime(regimeData);
     } catch (e) {
       console.error("Error refreshing dashboard stats:", e);
     }
@@ -140,7 +145,7 @@ export default function App() {
       <div 
         className="glass-panel" 
         style={{ 
-          width: "260px", 
+          width: settings.compactSidebar ? "200px" : "260px", 
           borderRadius: "0px", 
           borderRight: "1px solid var(--border-color)", 
           borderTop: "none", 
@@ -149,7 +154,8 @@ export default function App() {
           display: "flex",
           flexDirection: "column",
           justifyContent: "space-between",
-          padding: "24px 16px"
+          padding: "24px 16px",
+          transition: "width var(--transition-normal)"
         }}
       >
         <div style={{ display: "flex", flexDirection: "column", gap: "30px" }}>
@@ -172,7 +178,7 @@ export default function App() {
                 textAlign: "left",
                 justifyContent: "flex-start",
                 borderColor: activeTab === "dashboard" ? "var(--accent-blue)" : "transparent",
-                background: activeTab === "dashboard" ? "rgba(0, 229, 255, 0.08)" : "transparent"
+                background: activeTab === "dashboard" ? "var(--accent-bg)" : "transparent"
               }}
               onClick={() => setActiveTab("dashboard")}
             >
@@ -189,7 +195,7 @@ export default function App() {
                 textAlign: "left",
                 justifyContent: "flex-start",
                 borderColor: activeTab === "charts" ? "var(--accent-blue)" : "transparent",
-                background: activeTab === "charts" ? "rgba(0, 229, 255, 0.08)" : "transparent"
+                background: activeTab === "charts" ? "var(--accent-bg)" : "transparent"
               }}
               onClick={() => setActiveTab("charts")}
             >
@@ -206,7 +212,7 @@ export default function App() {
                 textAlign: "left",
                 justifyContent: "flex-start",
                 borderColor: activeTab === "calendar" ? "var(--accent-blue)" : "transparent",
-                background: activeTab === "calendar" ? "rgba(0, 229, 255, 0.08)" : "transparent"
+                background: activeTab === "calendar" ? "var(--accent-bg)" : "transparent"
               }}
               onClick={() => setActiveTab("calendar")}
             >
@@ -223,7 +229,7 @@ export default function App() {
                 textAlign: "left",
                 justifyContent: "flex-start",
                 borderColor: activeTab === "coach" ? "var(--accent-blue)" : "transparent",
-                background: activeTab === "coach" ? "rgba(0, 229, 255, 0.08)" : "transparent"
+                background: activeTab === "coach" ? "var(--accent-bg)" : "transparent"
               }}
               onClick={() => setActiveTab("coach")}
             >
@@ -240,7 +246,7 @@ export default function App() {
                 textAlign: "left",
                 justifyContent: "flex-start",
                 borderColor: activeTab === "replay" ? "var(--accent-blue)" : "transparent",
-                background: activeTab === "replay" ? "rgba(0, 229, 255, 0.08)" : "transparent"
+                background: activeTab === "replay" ? "var(--accent-bg)" : "transparent"
               }}
               onClick={() => {
                 if (trades.filter(t => t.executions.length >= 2).length === 0) {
@@ -254,6 +260,23 @@ export default function App() {
             >
               <Play size={18} />
               Trade Execution Replay
+            </button>
+
+            <button
+              className={`btn-secondary`}
+              style={{
+                display: "flex",
+                alignItems: "center",
+                gap: "12px",
+                textAlign: "left",
+                justifyContent: "flex-start",
+                borderColor: activeTab === "settings" ? "var(--accent-blue)" : "transparent",
+                background: activeTab === "settings" ? "var(--accent-bg)" : "transparent"
+              }}
+              onClick={() => setActiveTab("settings")}
+            >
+              <SettingsIcon size={18} />
+              Settings
             </button>
           </div>
         </div>
@@ -296,20 +319,26 @@ export default function App() {
         >
           <div style={{ display: "flex", alignItems: "center", gap: "10px" }}>
             <span style={{ fontSize: "0.85rem", color: "var(--text-secondary)" }}>Market State:</span>
-            <span 
+            <button
               className="glow-effect"
+              onClick={() => setShowMarketAnalysis(true)}
               style={{ 
                 padding: "4px 10px", 
                 borderRadius: "16px", 
                 fontSize: "0.75rem", 
                 fontWeight: "600",
-                background: "rgba(0, 229, 255, 0.08)",
+                background: "var(--accent-bg)",
                 border: "1px solid var(--accent-blue)",
-                color: "var(--accent-blue)"
+                color: "var(--accent-blue)",
+                cursor: "pointer",
+                display: "flex",
+                alignItems: "center",
+                gap: "6px",
               }}
             >
-              {marketRegime}
-            </span>
+              {marketRegime.regime_type || "Unknown"}
+              <span style={{ fontSize: "0.6rem", opacity: 0.6 }}>inspect</span>
+            </button>
           </div>
 
           <div style={{ fontSize: "0.85rem", color: "var(--text-secondary)" }}>
@@ -346,8 +375,15 @@ export default function App() {
           {activeTab === "coach" && (
             <AICoach accountId={accountId} onRefreshTrades={loadDashboardData} />
           )}
+
+          {activeTab === "settings" && (
+            <Settings />
+          )}
         </main>
       </div>
+      {showMarketAnalysis && (
+        <MarketAnalysis regime={marketRegime} onClose={() => setShowMarketAnalysis(false)} />
+      )}
     </div>
   );
 }
