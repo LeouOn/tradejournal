@@ -41,6 +41,7 @@ export interface Trade {
   bias?: string;
   bias_reversal?: boolean;
   trade_type?: string;
+  stop_loss?: number | string | null;
 }
 
 export interface Stats {
@@ -56,6 +57,8 @@ export interface Stats {
   breakEvenTrades: number;
   ruleAdherenceRate: number;
   costOfIndiscipline: number;
+  grossProfits?: number;
+  grossLosses?: number;
 }
 
 interface DashboardProps {
@@ -103,6 +106,12 @@ export default function Dashboard({
   const [entryMode, setEntryMode] = useState<"quick" | "advanced">("quick");
   const [symbol, setSymbol] = useState("");
   const [initialRisk, setInitialRisk] = useState("100");
+  const [stopLoss, setStopLoss] = useState("");
+  const [tradeTimestamp, setTradeTimestamp] = useState(() => {
+    const now = new Date();
+    now.setMinutes(now.getMinutes() - now.getTimezoneOffset());
+    return now.toISOString().slice(0, 16); // Local format YYYY-MM-DDTHH:MM
+  });
   const [rulesFollowed, setRulesFollowed] = useState(true);
   const [notes, setNotes] = useState("");
   const [selectedTags, setSelectedTags] = useState<string[]>([]);
@@ -117,6 +126,7 @@ export default function Dashboard({
   // Edit Trade Modal State
   const [editingTrade, setEditingTrade] = useState<Trade | null>(null);
   const [editSymbol, setEditSymbol] = useState("");
+  const [editStopLoss, setEditStopLoss] = useState("");
   const [editBias, setEditBias] = useState<"LONG" | "SHORT" | "RANGE">("RANGE");
   const [editBiasReversal, setEditBiasReversal] = useState(false);
   const [editTradeType, setEditTradeType] = useState<"BREAKOUT" | "RANGE">("BREAKOUT");
@@ -342,6 +352,7 @@ export default function Dashboard({
           rules_followed: editRulesFollowed,
           notes: editNotes,
           initial_risk: initialRisk,
+          stop_loss: editStopLoss ? Number(editStopLoss) : null,
         }),
       });
       if (res.ok) {
@@ -472,10 +483,14 @@ export default function Dashboard({
           bias: bias,
           bias_reversal: biasReversal,
           trade_type: tradeType,
+          created_at: tradeTimestamp ? new Date(tradeTimestamp).toISOString() : undefined,
+          stop_loss: stopLoss ? Number(stopLoss) : null,
         }),
       });
       const newTrade = await tradeRes.json();
       const tradeId = newTrade.trade_id;
+
+      const execTimestamp = tradeTimestamp ? new Date(tradeTimestamp).toISOString() : undefined;
 
       // 2. Add executions based on mode
       if (entryMode === "quick") {
@@ -493,6 +508,7 @@ export default function Dashboard({
             quantity: quickQuantity,
             side: quickSide,
             initial_risk: initialRisk,
+            execution_timestamp: execTimestamp,
           }),
         });
 
@@ -508,6 +524,7 @@ export default function Dashboard({
               quantity: quickQuantity,
               side: exitSide,
               initial_risk: initialRisk,
+              execution_timestamp: execTimestamp,
             }),
           });
         }
@@ -524,6 +541,7 @@ export default function Dashboard({
               quantity: exec.quantity,
               side: exec.side,
               initial_risk: initialRisk,
+              execution_timestamp: execTimestamp,
             }),
           });
         }
@@ -541,6 +559,12 @@ export default function Dashboard({
       setBias("RANGE");
       setBiasReversal(false);
       setTradeType("BREAKOUT");
+      setStopLoss("");
+      setTradeTimestamp(() => {
+        const now = new Date();
+        now.setMinutes(now.getMinutes() - now.getTimezoneOffset());
+        return now.toISOString().slice(0, 16);
+      });
       onRefresh();
     } catch (err) {
       console.error(err);
@@ -877,6 +901,27 @@ export default function Dashboard({
                 />
               </div>
               <div>
+                <label className="label-text">Stop Loss (Optional)</label>
+                <input
+                  type="number"
+                  step="any"
+                  placeholder="Stop price"
+                  className="input-field"
+                  value={stopLoss}
+                  onChange={(e) => setStopLoss(e.target.value)}
+                />
+              </div>
+              <div>
+                <label className="label-text">Trade Date & Time</label>
+                <input
+                  type="datetime-local"
+                  className="input-field"
+                  value={tradeTimestamp}
+                  onChange={(e) => setTradeTimestamp(e.target.value)}
+                  required
+                />
+              </div>
+              <div>
                 <label className="label-text">Rules Followed?</label>
                 <select 
                   className="input-field"
@@ -1137,9 +1182,18 @@ export default function Dashboard({
               {(stats.winRate * 100).toFixed(1)}%
             </h2>
           </div>
-          <div style={{ display: "flex", justifyContent: "space-between", fontSize: "0.8rem", color: "var(--text-secondary)", marginTop: "12px" }}>
-            <span>Ratio</span>
-            <span>{stats.winningTrades}W - {stats.losingTrades}L</span>
+          <div style={{ padding: "0 12px", marginBottom: "12px" }}>
+            <div style={{ display: "flex", justifyContent: "space-between", fontSize: "0.8rem", color: "var(--text-secondary)" }}>
+              <span>Ratio</span>
+              <span>{stats.winningTrades}W - {stats.losingTrades}L</span>
+            </div>
+            <div style={{ display: "flex", justifyContent: "space-between", fontSize: "0.75rem", color: "var(--text-secondary)", marginTop: "4px" }}>
+              <span>Avg Win / Loss</span>
+              <span>
+                ${stats.winningTrades > 0 ? ((stats.grossProfits || 0) / stats.winningTrades).toFixed(0) : 0} / 
+                -${stats.losingTrades > 0 ? ((stats.grossLosses || 0) / stats.losingTrades).toFixed(0) : 0}
+              </span>
+            </div>
           </div>
         </div>
 
@@ -1167,9 +1221,17 @@ export default function Dashboard({
               {stats.zellaScore}/100
             </h2>
           </div>
-          <div style={{ display: "flex", justifyContent: "space-between", fontSize: "0.8rem", color: "var(--text-secondary)", marginTop: "12px" }}>
-            <span>MDD: {stats.maxDrawdown.toFixed(1)}%</span>
-            <span>Adherence: {(stats.ruleAdherenceRate * 100).toFixed(0)}%</span>
+          <div style={{ padding: "0 12px", marginBottom: "12px" }}>
+            <div style={{ display: "flex", justifyContent: "space-between", fontSize: "0.8rem", color: "var(--text-secondary)" }}>
+              <span>MDD / Adherence</span>
+              <span>{stats.maxDrawdown.toFixed(1)}% / {(stats.ruleAdherenceRate * 100).toFixed(0)}%</span>
+            </div>
+            <div style={{ display: "flex", justifyContent: "space-between", fontSize: "0.75rem", color: "var(--text-secondary)", marginTop: "4px" }}>
+              <span>Recovery Factor</span>
+              <span>
+                {stats.maxDrawdown > 0 ? (trades.reduce((acc, t) => acc + Number(t.net_pnl), 0) / (initialBalance * stats.maxDrawdown / 100)).toFixed(2) : "5.00"}
+              </span>
+            </div>
           </div>
         </div>
       </div>
@@ -1340,6 +1402,7 @@ export default function Dashboard({
                             onClick={() => {
                               setEditingTrade(t);
                               setEditSymbol(t.symbol);
+                              setEditStopLoss(t.stop_loss ? String(t.stop_loss) : "");
                               setEditBias((t.bias || "RANGE") as "LONG" | "SHORT" | "RANGE");
                               setEditBiasReversal(!!t.bias_reversal);
                               setEditTradeType((t.trade_type || "BREAKOUT") as "BREAKOUT" | "RANGE");
@@ -1402,6 +1465,17 @@ export default function Dashboard({
                   className="input-field"
                   value={editSymbol}
                   onChange={(e) => setEditSymbol(e.target.value)}
+                />
+              </div>
+              <div>
+                <label className="label-text">Stop Loss (Optional)</label>
+                <input
+                  type="number"
+                  step="any"
+                  className="input-field"
+                  value={editStopLoss}
+                  onChange={(e) => setEditStopLoss(e.target.value)}
+                  placeholder="Stop price"
                 />
               </div>
               <div>

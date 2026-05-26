@@ -222,6 +222,7 @@ export async function streamAICoach(
   accountId: string,
   userQuery: string,
   reconciliationReportJson: string | null,
+  modelName: string | null,
   onToken: (token: string) => void,
   onComplete: (fullText: string) => void
 ): Promise<void> {
@@ -287,7 +288,7 @@ ${orphanText}
   }
 
   const models = await getAvailableModels();
-  const selectedModel = process.env.LLM_MODEL || models[0] || "local-model";
+  const selectedModel = modelName || process.env.LLM_MODEL || models[0] || "local-model";
 
   const systemPrompt = `
 You are the "Antigravity Quantitative Trading Coach", an elite AI-driven performance auditor.

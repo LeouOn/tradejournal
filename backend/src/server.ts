@@ -4,9 +4,11 @@ import { WebSocketServer, WebSocket } from "ws";
 import cors from "cors";
 import dotenv from "dotenv";
 import { PrismaClient } from "@prisma/client";
-import { generateEmbedding, streamAICoach } from "./services/aiRouter";
+import { generateEmbedding, streamAICoach, getAvailableModels } from "./services/aiRouter";
 import { calculateMetrics } from "./utils/metrics";
 import { getSymbolMultiplier, validatePriceProximity } from "./utils/multipliers";
+import fs from "fs";
+import path from "path";
 
 dotenv.config();
 
@@ -18,7 +20,14 @@ const prisma = new PrismaClient();
 const PORT = process.env.PORT || 5000;
 
 app.use(cors());
-app.use(express.json());
+app.use(express.json({ limit: "50mb" }));
+app.use(express.urlencoded({ limit: "50mb", extended: true }));
+
+const uploadsDir = path.join(process.cwd(), "uploads");
+if (!fs.existsSync(uploadsDir)) {
+  fs.mkdirSync(uploadsDir);
+}
+app.use("/uploads", express.static(uploadsDir));
 
 // Active WebSocket connections
 const clients = new Set<WebSocket>();
@@ -221,7 +230,21 @@ async function updateTradeCalculations(tradeId: string, initialRisk = 100) {
   }
 
   // R-Multiple
-  const rMultiple = initialRisk > 0 ? netPnl / initialRisk : 0;
+  let calculatedRisk = initialRisk;
+  const stopLossVal = trade.stop_loss ? Number(trade.stop_loss) : 0;
+  if (stopLossVal > 0 && totalEntryQty > 0) {
+    const firstEntryPrice = executions[0].fill_price ? Number(executions[0].fill_price) : avgEntryPrice;
+    const firstEntryQty = executions[0].quantity ? Number(executions[0].quantity) : totalEntryQty;
+    const multiplier = getSymbolMultiplier(trade.symbol);
+    const riskPoints = Math.abs(firstEntryPrice - stopLossVal);
+    calculatedRisk = riskPoints * firstEntryQty * multiplier;
+  }
+
+  if (calculatedRisk <= 0) {
+    calculatedRisk = initialRisk || 100;
+  }
+
+  const rMultiple = calculatedRisk > 0 ? netPnl / calculatedRisk : 0;
 
   // Duration
   let duration = 0;
@@ -245,7 +268,7 @@ async function updateTradeCalculations(tradeId: string, initialRisk = 100) {
 }
 
 app.post("/api/trades", async (req, res) => {
-  const { symbol, account_id, initial_risk, rules_followed, notes, tags, status, manual_status, bias, bias_reversal, trade_type } = req.body;
+  const { symbol, account_id, initial_risk, rules_followed, notes, tags, status, manual_status, bias, bias_reversal, trade_type, created_at, stop_loss } = req.body;
   try {
     // 1. Generate text embedding for qualitative notes in background
     let embeddingStr: string | null = null;
@@ -267,6 +290,8 @@ app.post("/api/trades", async (req, res) => {
         bias: bias || "RANGE",
         bias_reversal: bias_reversal !== undefined ? bias_reversal : false,
         trade_type: trade_type || "BREAKOUT",
+        created_at: created_at ? new Date(created_at) : undefined,
+        stop_loss: stop_loss !== undefined && stop_loss !== null ? Number(stop_loss) : null,
       },
     });
 
@@ -310,7 +335,7 @@ app.post("/api/trades", async (req, res) => {
 // Update trade fields (e.g. status, notes, tags, rules_followed, initial risk)
 app.patch("/api/trades/:tradeId", async (req, res) => {
   const { tradeId } = req.params;
-  const { status, manual_status, notes, rules_followed, tags, initial_risk, bias, bias_reversal, trade_type } = req.body;
+  const { status, manual_status, notes, rules_followed, tags, initial_risk, bias, bias_reversal, trade_type, stop_loss } = req.body;
   try {
     const existingTrade = await prisma.trade.findUnique({
       where: { trade_id: tradeId },
@@ -364,6 +389,7 @@ app.patch("/api/trades/:tradeId", async (req, res) => {
         bias: bias !== undefined ? bias : existingTrade.bias,
         bias_reversal: bias_reversal !== undefined ? bias_reversal : existingTrade.bias_reversal,
         trade_type: trade_type !== undefined ? trade_type : existingTrade.trade_type,
+        stop_loss: stop_loss !== undefined ? (stop_loss !== null ? Number(stop_loss) : null) : undefined,
       },
     });
 
@@ -763,7 +789,7 @@ app.get("/api/market/regime", (req, res) => {
  * ----------------------------------------------------
  */
 app.get("/api/ai/coach", async (req, res) => {
-  const { accountId, query, reconciliationReport } = req.query;
+  const { accountId, query, reconciliationReport, model } = req.query;
 
   if (!accountId || !query) {
     return res.status(400).json({ error: "accountId and query parameters are required" });
@@ -779,16 +805,43 @@ app.get("/api/ai/coach", async (req, res) => {
     res.write(":\n\n");
   }, 15000);
 
+  // Save the user message to ChatMessage table
+  try {
+    await prisma.chatMessage.create({
+      data: {
+        role: "user",
+        content: String(query),
+        account_id: String(accountId),
+      },
+    });
+  } catch (e) {
+    console.error("Failed to save user chat log:", e);
+  }
+
   try {
     await streamAICoach(
       String(accountId),
       String(query),
       reconciliationReport ? String(reconciliationReport) : null,
+      model ? String(model) : null,
       (token) => {
         // Send SSE message block
         res.write(`data: ${JSON.stringify({ token })}\n\n`);
       },
-      (fullText) => {
+      async (fullText) => {
+        // Save the assistant message to ChatMessage table on completion
+        try {
+          await prisma.chatMessage.create({
+            data: {
+              role: "assistant",
+              content: fullText,
+              account_id: String(accountId),
+            },
+          });
+        } catch (e) {
+          console.error("Failed to save assistant chat log:", e);
+        }
+
         res.write(`data: ${JSON.stringify({ complete: true, fullText })}\n\n`);
         clearInterval(keepAlive);
         res.end();
@@ -800,6 +853,52 @@ app.get("/api/ai/coach", async (req, res) => {
     res.write(`data: ${JSON.stringify({ complete: true })}\n\n`);
     clearInterval(keepAlive);
     res.end();
+  }
+});
+
+// Endpoint to fetch available models
+app.get("/api/ai/models", async (req, res) => {
+  try {
+    const models = await getAvailableModels();
+    res.json(models);
+  } catch (error: any) {
+    console.error("Failed to fetch AI models:", error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// Endpoint to fetch chat message history for an account
+app.get("/api/ai/chats", async (req, res) => {
+  const { accountId } = req.query;
+  if (!accountId) {
+    return res.status(400).json({ error: "accountId is required" });
+  }
+  try {
+    const chats = await prisma.chatMessage.findMany({
+      where: { account_id: String(accountId) },
+      orderBy: { created_at: "asc" },
+    });
+    res.json(chats);
+  } catch (error: any) {
+    console.error("Failed to fetch chat logs:", error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// Endpoint to clear/delete chat history for an account
+app.delete("/api/ai/chats", async (req, res) => {
+  const { accountId } = req.query;
+  if (!accountId) {
+    return res.status(400).json({ error: "accountId is required" });
+  }
+  try {
+    await prisma.chatMessage.deleteMany({
+      where: { account_id: String(accountId) },
+    });
+    res.json({ success: true, message: "Chat history cleared successfully" });
+  } catch (error: any) {
+    console.error("Failed to clear chat logs:", error);
+    res.status(500).json({ error: error.message });
   }
 });
 
@@ -1109,6 +1208,103 @@ app.post("/api/ingest/ironbeam/sync", async (req, res) => {
     });
   } catch (error: any) {
     console.error("Sync statement error:", error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// Upload a chart screenshot
+app.post("/api/charts/upload", async (req, res) => {
+  const { accountId, dateStr, imageData } = req.body;
+
+  if (!accountId || !dateStr || !imageData) {
+    return res.status(400).json({ error: "accountId, dateStr, and imageData are required" });
+  }
+
+  try {
+    // 1. Validate and parse base64 image
+    const matches = imageData.match(/^data:image\/([A-Za-z-+]+);base64,(.+)$/);
+    if (!matches || matches.length !== 3) {
+      return res.status(400).json({ error: "Invalid image base64 format" });
+    }
+
+    const extension = matches[1];
+    const imageBuffer = Buffer.from(matches[2], "base64");
+
+    // 2. Generate unique filename and write to disk
+    const cleanDate = dateStr.replace(/\//g, "-").replace(/:/g, "-");
+    const filename = `${accountId}_${cleanDate}_${Date.now()}.${extension}`;
+    const filePath = path.join(uploadsDir, filename);
+
+    fs.writeFileSync(filePath, imageBuffer);
+
+    // 3. Save to database
+    const relativePath = `/uploads/${filename}`;
+    const chart = await prisma.dailyChart.create({
+      data: {
+        date_str: dateStr,
+        image_path: relativePath,
+        account_id: accountId,
+      },
+    });
+
+    res.json(chart);
+  } catch (error: any) {
+    console.error("Failed to upload chart:", error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// Get all chart screenshots for a day
+app.get("/api/charts", async (req, res) => {
+  const { accountId, dateStr } = req.query;
+
+  if (!accountId || !dateStr) {
+    return res.status(400).json({ error: "accountId and dateStr are required" });
+  }
+
+  try {
+    const charts = await prisma.dailyChart.findMany({
+      where: {
+        account_id: String(accountId),
+        date_str: String(dateStr),
+      },
+      orderBy: { created_at: "asc" },
+    });
+    res.json(charts);
+  } catch (error: any) {
+    console.error("Failed to fetch daily charts:", error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// Delete a chart screenshot
+app.delete("/api/charts/:chartId", async (req, res) => {
+  const { chartId } = req.params;
+
+  try {
+    const chart = await prisma.dailyChart.findUnique({
+      where: { chart_id: chartId },
+    });
+
+    if (!chart) {
+      return res.status(404).json({ error: "Chart not found" });
+    }
+
+    // Delete file from disk
+    const filename = path.basename(chart.image_path);
+    const filePath = path.join(uploadsDir, filename);
+    if (fs.existsSync(filePath)) {
+      fs.unlinkSync(filePath);
+    }
+
+    // Delete from database
+    await prisma.dailyChart.delete({
+      where: { chart_id: chartId },
+    });
+
+    res.json({ success: true, message: "Chart screenshot deleted" });
+  } catch (error: any) {
+    console.error("Failed to delete chart:", error);
     res.status(500).json({ error: error.message });
   }
 });

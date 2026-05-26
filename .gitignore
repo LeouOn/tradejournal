@@ -1,1 +1,11 @@
-/node_modules
+# Dependencies
+node_modules/
+
+# Local configuration
+.env
+.env.local
+*.log
+
+# Databases
+*.db
+*.db-journal

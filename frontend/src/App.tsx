@@ -365,7 +365,7 @@ export default function App() {
           )}
 
           {activeTab === "calendar" && (
-            <CalendarView trades={trades} />
+            <CalendarView trades={trades} accountId={accountId} />
           )}
 
           {activeTab === "replay" && selectedTrade && (

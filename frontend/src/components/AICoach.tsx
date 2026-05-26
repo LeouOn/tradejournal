@@ -33,9 +33,70 @@ export default function AICoach({ accountId, onRefreshTrades }: AICoachProps) {
   const [isSyncing, setIsSyncing] = useState(false);
   const [syncStatus, setSyncStatus] = useState<{ success: boolean; message: string } | null>(null);
 
+  // Model Selection & Persistent Chats
+  const [models, setModels] = useState<string[]>([]);
+  const [selectedModel, setSelectedModel] = useState<string>("");
+
   useEffect(() => {
     chatBottomRef.current?.scrollIntoView({ behavior: "smooth" });
   }, [messages, isTyping]);
+
+  // Fetch available models
+  useEffect(() => {
+    fetch("http://localhost:5000/api/ai/models")
+      .then((res) => res.json())
+      .then((data) => {
+        if (Array.isArray(data)) {
+          setModels(data);
+        }
+      })
+      .catch((err) => console.error("Error fetching models:", err));
+  }, []);
+
+  // Fetch chat history
+  useEffect(() => {
+    if (!accountId) return;
+    fetch(`http://localhost:5000/api/ai/chats?accountId=${accountId}`)
+      .then((res) => res.json())
+      .then((data) => {
+        if (Array.isArray(data) && data.length > 0) {
+          setMessages([
+            {
+              role: "assistant",
+              content: "Hello! I am your Antigravity Quantitative Trading Coach. I analyze your trade entries, scaling behavior, qualitative emotional tags, and current Hidden Markov Model market regimes. Ask me anything, or run one of the diagnostics below.",
+            },
+            ...data.map((m: any) => ({ role: m.role, content: m.content })),
+          ]);
+        } else {
+          setMessages([
+            {
+              role: "assistant",
+              content: "Hello! I am your Antigravity Quantitative Trading Coach. I analyze your trade entries, scaling behavior, qualitative emotional tags, and current Hidden Markov Model market regimes. Ask me anything, or run one of the diagnostics below.",
+            },
+          ]);
+        }
+      })
+      .catch((err) => console.error("Error fetching chats:", err));
+  }, [accountId]);
+
+  const handleClearChat = async () => {
+    if (!window.confirm("Are you sure you want to clear your chat history?")) return;
+    try {
+      const res = await fetch(`http://localhost:5000/api/ai/chats?accountId=${accountId}`, {
+        method: "DELETE",
+      });
+      if (res.ok) {
+        setMessages([
+          {
+            role: "assistant",
+            content: "Hello! I am your Antigravity Quantitative Trading Coach. I analyze your trade entries, scaling behavior, qualitative emotional tags, and current Hidden Markov Model market regimes. Ask me anything, or run one of the diagnostics below.",
+          },
+        ]);
+      }
+    } catch (err) {
+      console.error("Error clearing chat logs:", err);
+    }
+  };
 
   // Sends query to Express SSE Coach endpoint
   const handleSendMessage = async (queryText: string, reportData: any = null) => {
@@ -52,6 +113,9 @@ export default function AICoach({ accountId, onRefreshTrades }: AICoachProps) {
 
     try {
       let url = `http://localhost:5000/api/ai/coach?accountId=${accountId}&query=${encodeURIComponent(queryText)}`;
+      if (selectedModel) {
+        url += `&model=${encodeURIComponent(selectedModel)}`;
+      }
       if (reportData) {
         url += `&reconciliationReport=${encodeURIComponent(JSON.stringify(reportData))}`;
       }
@@ -62,14 +126,16 @@ export default function AICoach({ accountId, onRefreshTrades }: AICoachProps) {
         
         if (data.token) {
           setMessages((prev) => {
-            const idx = prev.length - 1;
-            const last = prev[idx];
+            if (prev.length === 0) return prev;
+            const list = [...prev];
+            const last = list[list.length - 1];
             if (last && last.role === "assistant") {
-              const updated = [...prev];
-              updated[idx] = { ...last, content: last.content + data.token };
-              return updated;
+              list[list.length - 1] = {
+                ...last,
+                content: last.content + data.token,
+              };
             }
-            return prev;
+            return list;
           });
         }
 
@@ -82,14 +148,16 @@ export default function AICoach({ accountId, onRefreshTrades }: AICoachProps) {
       eventSource.onerror = (err) => {
         console.error("SSE Connection Error:", err);
         setMessages((prev) => {
-          const idx = prev.length - 1;
-          const last = prev[idx];
+          if (prev.length === 0) return prev;
+          const list = [...prev];
+          const last = list[list.length - 1];
           if (last && last.role === "assistant" && !last.content) {
-            const updated = [...prev];
-            updated[idx] = { ...last, content: "Error connecting to AI Coach endpoint. Please make sure LM Studio is running on http://localhost:1234/v1 or that you have configured an OpenAI API key." };
-            return updated;
+            list[list.length - 1] = {
+              ...last,
+              content: "Error connecting to AI Coach endpoint. Please make sure LM Studio is running on http://localhost:1234/v1 or that you have configured an OpenAI API key.",
+            };
           }
-          return prev;
+          return list;
         });
         eventSource.close();
         setIsTyping(false);
@@ -183,9 +251,33 @@ export default function AICoach({ accountId, onRefreshTrades }: AICoachProps) {
       
       {/* Left Column: Chat panel */}
       <div className="glass-panel" style={{ display: "flex", flexDirection: "column", height: "100%" }}>
-        <div style={{ display: "flex", alignItems: "center", gap: "10px", borderBottom: "1px solid var(--border-color)", paddingBottom: "12px", marginBottom: "12px" }}>
-          <Brain style={{ color: "var(--accent-blue)" }} />
-          <h3 style={{ fontSize: "1.1rem" }}>AI Diagnostic Performance Coach</h3>
+        <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", borderBottom: "1px solid var(--border-color)", paddingBottom: "12px", marginBottom: "12px" }}>
+          <div style={{ display: "flex", alignItems: "center", gap: "10px" }}>
+            <Brain style={{ color: "var(--accent-blue)" }} />
+            <h3 style={{ fontSize: "1.1rem" }}>AI Diagnostic Coach</h3>
+          </div>
+          <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
+            <select
+              className="input-field"
+              style={{ padding: "4px 8px", fontSize: "0.8rem", width: "160px", margin: 0, height: "30px", minHeight: "30px" }}
+              value={selectedModel}
+              onChange={(e) => setSelectedModel(e.target.value)}
+            >
+              <option value="">Default Model</option>
+              {models.map((m) => (
+                <option key={m} value={m}>
+                  {m.length > 20 ? m.slice(0, 20) + "..." : m}
+                </option>
+              ))}
+            </select>
+            <button
+              className="btn-secondary"
+              style={{ padding: "4px 8px", fontSize: "0.75rem", height: "30px", display: "flex", alignItems: "center", justifyContent: "center" }}
+              onClick={handleClearChat}
+            >
+              Clear
+            </button>
+          </div>
         </div>
 
         {/* Message logs */}
