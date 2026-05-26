@@ -2,6 +2,7 @@ import React, { useState, useEffect } from "react";
 import { 
   Award, Flame, EyeOff, Eye, Plus, Trash2, Play, MessageSquare
 } from "lucide-react";
+import { useToast } from "../contexts/ToastContext";
 
 interface Tag {
   tag_id: string;
@@ -80,6 +81,8 @@ export default function Dashboard({
   onSelectTradeForReplay,
   onSetActiveTab
 }: DashboardProps) {
+  const toast = useToast();
+
   // Helper to calculate remaining contracts
   const getRemainingQuantity = (executions: Execution[]): number => {
     if (!executions || executions.length === 0) return 0;
@@ -246,7 +249,7 @@ export default function Dashboard({
           const err = await res.json();
           alert(err.error || "Import failed");
         }
-      } catch (err) {
+      } catch {
         alert("Invalid file format. Make sure it is a valid trades JSON file.");
       }
     };
@@ -418,9 +421,15 @@ export default function Dashboard({
     setExecutionsInput(executionsInput.filter((_, i) => i !== index));
   };
 
-  const handleExecutionChange = (index: number, field: string, value: string) => {
+  const handleExecutionChange = (index: number, field: "fill_price" | "quantity" | "side", value: string) => {
     const updated = [...executionsInput];
-    (updated[index] as any)[field] = value;
+    if (field === "side") {
+      updated[index].side = value as "BUY" | "SELL";
+    } else if (field === "fill_price") {
+      updated[index].fill_price = value;
+    } else if (field === "quantity") {
+      updated[index].quantity = value;
+    }
     setExecutionsInput(updated);
   };
 
@@ -566,9 +575,15 @@ export default function Dashboard({
         return now.toISOString().slice(0, 16);
       });
       onRefresh();
+
+      if (rulesFollowed) {
+        toast.celebrate("Elite discipline! Consistency builds professional edge. Keep it up! 🏆", "Disciplined Trade Logged!");
+      } else {
+        toast.nudge("Self-reporting mistakes takes courage and builds edge. Recording errors is how we grow! 🧠", "Mistake Logged & Respected");
+      }
     } catch (err) {
       console.error(err);
-      alert("Error saving trade.");
+      toast.error("Failed to save the trade. Please review fields.");
     }
   };
 

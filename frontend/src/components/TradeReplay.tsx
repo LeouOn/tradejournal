@@ -1,4 +1,4 @@
-import { useRef, useEffect, useState } from "react";
+import { useRef, useEffect, useState, useMemo } from "react";
 import { Play, Pause, RotateCcw } from "lucide-react";
 import type { Trade } from "./Dashboard";
 
@@ -6,12 +6,21 @@ interface TradeReplayProps {
   trade: Trade;
 }
 
+// A pure, deterministic seeded random number generator (Mulberry32)
+function createSeededRandom(seed: number) {
+  let h = seed;
+  return () => {
+    h = Math.imul(h ^ (h >>> 15), 1 | h);
+    h = (h + Math.imul(h ^ (h >>> 7), 61 | h)) ^ h;
+    return ((h ^ (h >>> 14)) >>> 0) / 4294967296;
+  };
+}
+
 export default function TradeReplay({ trade }: TradeReplayProps) {
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
   const [isPlaying, setIsPlaying] = useState(false);
   const [playbackSpeed, setPlaybackSpeed] = useState<1 | 5 | 10>(1);
   const [currentProgress, setCurrentProgress] = useState(0); // 0 to 100 percentage
-  const [tickData, setTickData] = useState<number[]>([]);
   const animationFrameId = useRef<number | null>(null);
 
   const executions = [...trade.executions].sort(
@@ -23,16 +32,20 @@ export default function TradeReplay({ trade }: TradeReplayProps) {
   const direction = executions[0]?.side || "BUY"; // BUY = Long, SELL = Short
 
   // 1. Generate 200 ticks of price action that connect entry to exit price logically
-  useEffect(() => {
+  const tickData = useMemo(() => {
     const ticks: number[] = [];
     
+    // Create seed from entry/exit prices and trade symbol
+    const symbolSum = trade.symbol.split("").reduce((acc, char) => acc + char.charCodeAt(0), 0);
+    const rand = createSeededRandom(Math.floor(entryPrice * 100) + Math.floor(exitPrice * 100) + symbolSum);
+
     // Start price slightly before entry price
     let currentPrice = entryPrice - (direction === "BUY" ? 5 : -5);
     
     // Ticks 0 - 50: Approach entry
     const step1 = (entryPrice - currentPrice) / 50;
     for (let i = 0; i < 50; i++) {
-      currentPrice += step1 + (Math.random() - 0.5) * (entryPrice * 0.001);
+      currentPrice += step1 + (rand() - 0.5) * (entryPrice * 0.001);
       ticks.push(currentPrice);
     }
     
@@ -44,7 +57,7 @@ export default function TradeReplay({ trade }: TradeReplayProps) {
     const step2 = (exitPrice - entryPrice) / 100;
     for (let i = 1; i < 100; i++) {
       // Add random walk drift towards exit
-      currentPrice += step2 + (Math.random() - 0.5) * (entryPrice * 0.002);
+      currentPrice += step2 + (rand() - 0.5) * (entryPrice * 0.002);
       ticks.push(currentPrice);
     }
     
@@ -53,16 +66,14 @@ export default function TradeReplay({ trade }: TradeReplayProps) {
 
     // Ticks 151 - 200: Post-exit fluctuations
     currentPrice = exitPrice;
-    const step3 = (exitPrice - (exitPrice + (Math.random() - 0.5) * (exitPrice * 0.02))) / 50;
+    const step3 = (exitPrice - (exitPrice + (rand() - 0.5) * (exitPrice * 0.02))) / 50;
     for (let i = 0; i < 50; i++) {
-      currentPrice -= step3 + (Math.random() - 0.5) * (entryPrice * 0.001);
+      currentPrice -= step3 + (rand() - 0.5) * (entryPrice * 0.001);
       ticks.push(currentPrice);
     }
 
-    setTickData(ticks);
-    setCurrentProgress(0);
-    setIsPlaying(false);
-  }, [trade]);
+    return ticks;
+  }, [entryPrice, exitPrice, direction, trade.symbol]);
 
   // 2. Playback progress control loop
   useEffect(() => {
@@ -197,7 +208,7 @@ export default function TradeReplay({ trade }: TradeReplayProps) {
     ctx.fillText(maxPrice.toFixed(2), width - 55, 20);
     ctx.fillText(minPrice.toFixed(2), width - 55, height - 12);
 
-  }, [currentProgress, tickData]);
+  }, [currentProgress, tickData, direction, entryPrice, exitPrice]);
 
   const handleReset = () => {
     setIsPlaying(false);

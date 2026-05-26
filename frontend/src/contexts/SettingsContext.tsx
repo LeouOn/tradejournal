@@ -1,3 +1,4 @@
+/* eslint-disable react-refresh/only-export-components */
 import { createContext, useContext, useState, useEffect, type ReactNode } from "react";
 
 export type ThemeId = "default" | "midnight" | "terminal" | "light" | "arctic";
@@ -22,7 +23,9 @@ function loadSettings(): AppSettings {
   try {
     const raw = localStorage.getItem(STORAGE_KEY);
     if (raw) return { ...defaults, ...JSON.parse(raw) };
-  } catch {}
+  } catch {
+    // Local storage empty or inaccessible, fallback to default configurations
+  }
   return { ...defaults };
 }
 

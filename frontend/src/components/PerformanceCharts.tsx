@@ -15,13 +15,14 @@ export default function PerformanceCharts({ trades, initialBalance }: Performanc
     .sort((a, b) => new Date(a.created_at).getTime() - new Date(b.created_at).getTime());
 
   // 1. Calculate Cumulative P&L timeline data
+  const chartData = [];
   let rollingPnl = 0;
   let rollingWins = 0;
-  let rollingLosses = 0;
   let runningProfits = 0;
   let runningLosses = 0;
 
-  const chartData = sortedTrades.map((t, index) => {
+  for (let index = 0; index < sortedTrades.length; index++) {
+    const t = sortedTrades[index];
     const pnl = Number(t.net_pnl);
     rollingPnl += pnl;
     
@@ -29,7 +30,6 @@ export default function PerformanceCharts({ trades, initialBalance }: Performanc
       rollingWins++;
       runningProfits += pnl;
     } else if (pnl < -0.001) {
-      rollingLosses++;
       runningLosses += Math.abs(pnl);
     }
 
@@ -37,7 +37,7 @@ export default function PerformanceCharts({ trades, initialBalance }: Performanc
     const rollingWinRate = totalCalculated > 0 ? (rollingWins / totalCalculated) * 100 : 0;
     const rollingPF = runningLosses > 0 ? runningProfits / runningLosses : runningProfits > 0 ? 10 : 0;
 
-    return {
+    chartData.push({
       name: `Trade #${totalCalculated}`,
       symbol: t.symbol,
       pnl: pnl,
@@ -45,8 +45,8 @@ export default function PerformanceCharts({ trades, initialBalance }: Performanc
       balance: initialBalance + rollingPnl,
       winRate: Math.round(rollingWinRate),
       profitFactor: Number(rollingPF.toFixed(2)),
-    };
-  });
+    });
+  }
 
   // Group closed trades by calendar day for Overtrading Analytics
   const dailyTrades: { [date: string]: Trade[] } = {};
@@ -199,31 +199,7 @@ export default function PerformanceCharts({ trades, initialBalance }: Performanc
     { name: "Reversed", pnl: Number(revPnl.toFixed(2)), winRate: revCount > 0 ? Math.round((revWins / revCount) * 100) : 0 }
   ];
 
-  const CustomTooltip = ({ active, payload, label }: any) => {
-    if (active && payload && payload.length) {
-      const data = payload[0].payload;
-      return (
-        <div className="glass-panel" style={{ padding: "10px", border: "1px solid var(--accent-blue)" }}>
-          <p style={{ fontWeight: "bold" }}>{label} ({data.symbol})</p>
-          <p style={{ color: "var(--accent-blue)" }}>
-            Trade P&L: <span className={data.pnl >= 0 ? "metric-positive" : "metric-negative"}>
-              {data.pnl >= 0 ? "+" : ""}${data.pnl.toFixed(2)}
-            </span>
-          </p>
-          <p style={{ color: "var(--text-primary)" }}>
-            Account Balance: ${data.balance.toFixed(2)}
-          </p>
-          <p style={{ color: "var(--text-secondary)" }}>
-            Rolling Win Rate: {data.winRate}%
-          </p>
-          <p style={{ color: "var(--text-secondary)" }}>
-            Rolling PF: {data.profitFactor}
-          </p>
-        </div>
-      );
-    }
-    return null;
-  };
+
 
   if (chartData.length === 0) {
     return (
@@ -410,3 +386,47 @@ export default function PerformanceCharts({ trades, initialBalance }: Performanc
     </div>
   );
 }
+
+interface TooltipPayloadData {
+  symbol: string;
+  pnl: number;
+  balance: number;
+  winRate: number;
+  profitFactor: number;
+}
+
+interface TooltipPayloadItem {
+  payload: TooltipPayloadData;
+}
+
+interface CustomTooltipProps {
+  active?: boolean;
+  payload?: TooltipPayloadItem[];
+  label?: string;
+}
+
+const CustomTooltip = ({ active, payload, label }: CustomTooltipProps) => {
+  if (active && payload && payload.length) {
+    const data = payload[0].payload;
+    return (
+      <div className="glass-panel" style={{ padding: "10px", border: "1px solid var(--accent-blue)", background: "var(--bg-secondary)" }}>
+        <p style={{ fontWeight: "bold" }}>{label} ({data.symbol})</p>
+        <p style={{ color: "var(--accent-blue)" }}>
+          Trade P&L: <span className={data.pnl >= 0 ? "metric-positive" : "metric-negative"}>
+            {data.pnl >= 0 ? "+" : ""}${data.pnl.toFixed(2)}
+          </span>
+        </p>
+        <p style={{ color: "var(--text-primary)" }}>
+          Account Balance: ${data.balance.toFixed(2)}
+        </p>
+        <p style={{ color: "var(--text-secondary)" }}>
+          Rolling Win Rate: {data.winRate}%
+        </p>
+        <p style={{ color: "var(--text-secondary)" }}>
+          Rolling PF: {data.profitFactor}
+        </p>
+      </div>
+    );
+  }
+  return null;
+};

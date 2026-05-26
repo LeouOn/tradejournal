@@ -216,6 +216,74 @@ Trader Notes: "${t.notes}"`;
 }
 
 /**
+ * Tool Definition for natural language trade entry
+ */
+const logTradeTool = {
+  type: "function" as const,
+  function: {
+    name: "log_trade",
+    description: "Log a completed or open trade based on the user's natural language input. Call this ONLY when you have enough details to log a trade.",
+    parameters: {
+      type: "object",
+      properties: {
+        symbol: { type: "string", description: "Ticker symbol, e.g., NQ, ES, AAPL" },
+        side: { type: "string", enum: ["BUY", "SELL"], description: "Direction of the trade execution" },
+        quantity: { type: "number", description: "Number of contracts or shares" },
+        entry_price: { type: "number", description: "Average entry price" },
+        stop_loss: { type: "number", description: "Stop loss price" },
+        setup_type: { type: "string", description: "Type of setup, e.g., Breakout, Mean Reversion, Range" },
+        bias: { type: "string", enum: ["LONG", "SHORT", "RANGE"], description: "Market bias during the trade" },
+        notes: { type: "string", description: "Any additional qualitative notes about the trade" }
+      },
+      required: ["symbol", "side", "quantity", "entry_price"]
+    }
+  }
+};
+
+async function executeLogTrade(accountId: string, args: any) {
+  // 1. Generate embedding for notes
+  let embeddingStr: string | null = null;
+  if (args.notes && args.notes.trim() !== "") {
+    const vec = await generateEmbedding(args.notes);
+    embeddingStr = JSON.stringify(vec);
+  }
+
+  // 2. Create Trade
+  const trade = await prisma.trade.create({
+    data: {
+      symbol: args.symbol.toUpperCase(),
+      account_id: accountId,
+      status: "OPEN", // We log it as OPEN, calculation engine will close it if matched
+      manual_status: false,
+      rules_followed: true, // Optimistic default
+      notes: args.notes || "",
+      notes_vector: embeddingStr,
+      bias: args.bias || "RANGE",
+      trade_type: args.setup_type || "BREAKOUT",
+      stop_loss: args.stop_loss ? Number(args.stop_loss) : null,
+    },
+  });
+
+  // 3. Create initial execution
+  await prisma.execution.create({
+    data: {
+      trade_id: trade.trade_id,
+      fill_price: Number(args.entry_price),
+      quantity: Number(args.quantity),
+      side: args.side.toUpperCase(),
+      execution_timestamp: new Date(),
+    },
+  });
+
+  // 4. Trigger calculations via HTTP (or we could extract the function)
+  // Since updateTradeCalculations is in server.ts, we can just rely on the user refreshing, 
+  // or we can import updateTradeCalculations if we refactored it. 
+  // For now, it will just insert the records correctly.
+  
+  return trade;
+}
+
+/**
  * Streams the response from the LLM endpoint for a coach query using SSE
  */
 export async function streamAICoach(
@@ -322,91 +390,74 @@ ${notesContext}
 ==============================
 `;
 
+  // Fetch chat history from DB
+  let chatHistory: { role: "user" | "assistant", content: string }[] = [];
   try {
-    // If using local host, try the native LM Studio v1 endpoint first
-    if (baseURL.includes("localhost:1234") || baseURL.includes("127.0.0.1:1234")) {
-      try {
-        const host = baseURL.replace(/\/v1\/?$/, "");
-        const response = await fetch(`${host}/api/v1/chat`, {
-          method: "POST",
-          headers: {
-            "Content-Type": "application/json",
-            ...(apiKey && apiKey !== "lm-studio" ? { "Authorization": `Bearer ${apiKey}` } : {}),
-          },
-          body: JSON.stringify({
-            model: selectedModel,
-            input: userQuery,
-            system_prompt: systemPrompt,
-            stream: true,
-          }),
-        });
+    const pastChats = await prisma.chatMessage.findMany({
+      where: { account_id: accountId },
+      orderBy: { created_at: "desc" },
+      take: 6, // Last 6 messages (3 turns)
+    });
+    // Reverse because we queried descending to get recent, but LLM expects chronological
+    chatHistory = pastChats.reverse().map(c => ({
+      role: c.role as "user" | "assistant",
+      content: c.content
+    }));
+  } catch (e) {
+    console.warn("Could not fetch chat history for context:", e);
+  }
 
-        if (response.ok && response.body) {
-          const reader = response.body.getReader();
-          const decoder = new TextDecoder();
-          let buffer = "";
-          let fullText = "";
-          let currentEvent = "";
-
-          while (true) {
-            const { done, value } = await reader.read();
-            if (done) break;
-
-            buffer += decoder.decode(value, { stream: true });
-            const lines = buffer.split("\n");
-            buffer = lines.pop() || "";
-
-            for (const line of lines) {
-              const trimmed = line.trim();
-              if (trimmed.startsWith("event:")) {
-                currentEvent = trimmed.slice(6).trim();
-              } else if (trimmed.startsWith("data:")) {
-                const dataStr = trimmed.slice(5).trim();
-                if (dataStr) {
-                  try {
-                    const parsed = JSON.parse(dataStr);
-                    if ((currentEvent === "message.delta" || parsed.type === "message.delta") && parsed.content) {
-                      fullText += parsed.content;
-                      onToken(parsed.content);
-                    } else if ((currentEvent === "error" || parsed.type === "error") && parsed.message) {
-                      onToken(`[Error: ${parsed.message}]`);
-                    }
-                  } catch (e) {
-                    // Ignore parsing errors for incomplete chunks
-                  }
-                }
-              }
-            }
-          }
-          onComplete(fullText);
-          return; // Success, exit
-        } else {
-          console.warn(`Native LM Studio API returned status ${response.status}. Falling back to OpenAI compatible API.`);
-        }
-      } catch (nativeError) {
-        console.warn("Native LM Studio call failed, falling back to OpenAI compatible API:", nativeError);
-      }
-    }
-
-    // Fallback to OpenAI compatible streaming client
+  try {
+    // We use the OpenAI-compatible streaming client exclusively to guarantee proper tool_calls handling.
+    // Fallback to OpenAI compatible streaming client (which natively handles tool_calls well)
     const stream = await openai.chat.completions.create({
       model: selectedModel,
       messages: [
         { role: "system", content: systemPrompt },
+        ...chatHistory,
         { role: "user", content: userQuery },
       ],
       temperature: 0.3,
       stream: true,
+      tools: [logTradeTool],
     });
 
     let fullText = "";
+    let toolCallName = "";
+    let toolCallArgs = "";
+
     for await (const chunk of stream) {
-      const token = chunk.choices[0]?.delta?.content || "";
-      if (token) {
+      const delta = chunk.choices[0]?.delta;
+      if (delta?.tool_calls && delta.tool_calls.length > 0) {
+        // Accumulate tool call chunks
+        if (delta.tool_calls[0].function?.name) {
+          toolCallName = delta.tool_calls[0].function.name;
+        }
+        if (delta.tool_calls[0].function?.arguments) {
+          toolCallArgs += delta.tool_calls[0].function.arguments;
+        }
+      } else if (delta?.content) {
+        const token = delta.content;
         fullText += token;
         onToken(token);
       }
     }
+
+    // Execute tool if invoked
+    if (toolCallName === "log_trade" && toolCallArgs) {
+      try {
+        const args = JSON.parse(toolCallArgs);
+        await executeLogTrade(accountId, args);
+        const msg = `\n\n✅ **Trade successfully logged!**\n- Symbol: ${args.symbol}\n- Side: ${args.side}\n- Qty: ${args.quantity}\n- Price: ${args.entry_price}`;
+        fullText += msg;
+        onToken(msg);
+      } catch (err: any) {
+        const msg = `\n\n❌ **Failed to log trade via tool:** ${err.message}`;
+        fullText += msg;
+        onToken(msg);
+      }
+    }
+
     onComplete(fullText);
   } catch (error) {
     console.error("Error streaming chat completions:", error);

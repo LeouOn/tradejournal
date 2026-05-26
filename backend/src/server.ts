@@ -9,6 +9,10 @@ import { calculateMetrics } from "./utils/metrics";
 import { getSymbolMultiplier, validatePriceProximity } from "./utils/multipliers";
 import fs from "fs";
 import path from "path";
+import externalApiRouter, { setRegimeUpdater } from "./routes/externalApi";
+import { spawn } from "child_process";
+import cron from "node-cron";
+import { OpenAI } from "openai";
 
 dotenv.config();
 
@@ -28,6 +32,9 @@ if (!fs.existsSync(uploadsDir)) {
   fs.mkdirSync(uploadsDir);
 }
 app.use("/uploads", express.static(uploadsDir));
+
+// Wire up the external API router for Marketpulse
+app.use("/api/external", externalApiRouter);
 
 // Active WebSocket connections
 const clients = new Set<WebSocket>();
@@ -70,6 +77,11 @@ let currentMarketRegime: Record<string, any> = {
   regime_description: "Market regime classification pending. Run the ML pipeline (npm run ml:run) to populate with live data.",
   state_profiles: [],
 };
+
+setRegimeUpdater((newRegime) => {
+  currentMarketRegime = { ...currentMarketRegime, ...newRegime };
+  broadcast({ type: "REGIME_SHIFT", regime: currentMarketRegime });
+});
 
 /**
  * ----------------------------------------------------
@@ -1306,6 +1318,200 @@ app.delete("/api/charts/:chartId", async (req, res) => {
   } catch (error: any) {
     console.error("Failed to delete chart:", error);
     res.status(500).json({ error: error.message });
+  }
+});
+
+/**
+ * ----------------------------------------------------
+ * ACCOUNT CUSTOMIZATION
+ * ----------------------------------------------------
+ */
+app.patch("/api/accounts/:accountId", async (req, res) => {
+  const { accountId } = req.params;
+  const { account_name, broker_name, initial_balance } = req.body;
+  try {
+    const updatedAccount = await prisma.account.update({
+      where: { account_id: accountId },
+      data: {
+        account_name,
+        broker_name,
+        initial_balance: initial_balance !== undefined ? Number(initial_balance) : undefined,
+      },
+    });
+    res.json(updatedAccount);
+  } catch (error: any) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+/**
+ * ----------------------------------------------------
+ * HMM REGIME BACKGROUND PIPELINE
+ * ----------------------------------------------------
+ */
+function runHMMClassifier() {
+  const pythonExe = path.resolve(__dirname, "../../ml_pipeline/.venv/Scripts/python.exe");
+  const scriptFile = path.resolve(__dirname, "../../ml_pipeline/regime_classifier.py");
+  
+  console.log(`Spawning HMM classifier: ${pythonExe} ${scriptFile}`);
+  const py = spawn(pythonExe, [scriptFile]);
+  
+  py.stdout.on("data", (data) => {
+    console.log(`HMM stdout: ${data}`);
+  });
+  
+  py.stderr.on("data", (data) => {
+    console.error(`HMM stderr: ${data}`);
+  });
+  
+  py.on("close", (code) => {
+    console.log(`HMM process completed with code ${code}`);
+  });
+}
+
+app.post("/api/market/regime/trigger", (req, res) => {
+  try {
+    runHMMClassifier();
+    res.json({ success: true, message: "HMM regime classification task triggered." });
+  } catch (e: any) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// Schedule daily HMM run at midnight
+cron.schedule("0 0 * * *", () => {
+  console.log("Cron triggering daily HMM run...");
+  runHMMClassifier();
+});
+
+/**
+ * ----------------------------------------------------
+ * WEEKLY PERFORMANCE AUDITS (ON-DEMAND / SUGGESTIONS)
+ * ----------------------------------------------------
+ */
+async function generateWeeklyAuditReport(accountId: string, startDate: Date, endDate: Date) {
+  const account = await prisma.account.findUnique({
+    where: { account_id: accountId },
+  });
+  if (!account) throw new Error("Account not found");
+
+  const trades = await prisma.trade.findMany({
+    where: {
+      account_id: accountId,
+      created_at: {
+        gte: startDate,
+        lte: endDate,
+      },
+    },
+    include: { executions: true, trade_tags: { include: { tag: true } }, market_context: true },
+  });
+
+  const metrics = calculateMetrics(trades, Number(account.initial_balance));
+
+  const tradeSummaryList = trades.map((t) => {
+    const tags = t.trade_tags.map(tt => tt.tag.tag_name).join(", ");
+    return `- Trade: ${t.symbol} | P&L: $${Number(t.net_pnl).toFixed(2)} | Rules Followed: ${t.rules_followed ? "YES" : "NO"} | Tags: ${tags || "None"} | Notes: ${t.notes || "None"}`;
+  }).join("\n");
+
+  const prompt = `
+Generate a Weekly Performance Audit report for the trader.
+Account Name: ${account.account_name} (${account.broker_name})
+Date Range: ${startDate.toLocaleDateString()} to ${endDate.toLocaleDateString()}
+
+Weekly Metrics:
+- Total Closed Trades: ${metrics.totalTrades}
+- Win Rate: ${(metrics.winRate * 100).toFixed(1)}%
+- Profit Factor: ${metrics.profitFactor.toFixed(2)}
+- Net P&L: $${trades.reduce((acc, t) => acc + Number(t.net_pnl), 0).toFixed(2)}
+- Expectancy (R): +${metrics.expectancyR.toFixed(2)}R
+- Rule Adherence Rate: ${(metrics.ruleAdherenceRate * 100).toFixed(1)}%
+- Cost of Indiscipline: $${metrics.costOfIndiscipline.toFixed(2)}
+
+Weekly Trades Log:
+${tradeSummaryList || "No trades logged in this period."}
+
+Format the report beautifully in Markdown. Include:
+1. **Weekly Overview**: A summary of key statistics and performance.
+2. **Behavioral Analysis**: Audit of rules followed and cost of indiscipline. (If they broke rules, give them a gentle nudge on how discipline is key. Celebrate if they had 100% adherence!)
+3. **Setup and Regime Performance**: Analyze which setups or tags performed best under current market states.
+4. **Actionable Roadmap**: Clear adjustments for the next week (e.g. position sizing, tag-specific rules).
+`;
+
+  const baseURL = process.env.OPENAI_BASE_URL || "http://localhost:1234/v1";
+  const apiKey = process.env.OPENAI_API_KEY || "lm-studio";
+  const openaiClient = new OpenAI({ baseURL, apiKey });
+
+  const models = await getAvailableModels();
+  const selectedModel = process.env.LLM_MODEL || models[0] || "local-model";
+
+  const completion = await openaiClient.chat.completions.create({
+    model: selectedModel,
+    messages: [
+      { role: "system", content: "You are the Antigravity Quantitative Trading Coach. Provide a detailed, constructive weekly performance audit formatted in clean Markdown." },
+      { role: "user", content: prompt }
+    ],
+    temperature: 0.3,
+  });
+
+  const summary_md = completion.choices[0]?.message?.content || "Failed to generate weekly report.";
+
+  const report = await prisma.weeklyReport.create({
+    data: {
+      account_id: accountId,
+      start_date: startDate,
+      end_date: endDate,
+      summary_md,
+    },
+  });
+
+  broadcast({ type: "WEEKLY_REPORT_GENERATED", report });
+
+  return report;
+}
+
+app.get("/api/weekly-reports", async (req, res) => {
+  const { accountId } = req.query;
+  try {
+    const reports = await prisma.weeklyReport.findMany({
+      where: accountId ? { account_id: String(accountId) } : undefined,
+      orderBy: { created_at: "desc" },
+    });
+    res.json(reports);
+  } catch (error: any) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+app.post("/api/weekly-reports/trigger", async (req, res) => {
+  const { accountId, startDate, endDate } = req.body;
+  if (!accountId) {
+    return res.status(400).json({ error: "accountId is required." });
+  }
+  try {
+    const start = startDate ? new Date(startDate) : new Date(Date.now() - 7 * 24 * 60 * 60 * 1000);
+    const end = endDate ? new Date(endDate) : new Date();
+    const report = await generateWeeklyAuditReport(accountId, start, end);
+    res.json(report);
+  } catch (error: any) {
+    console.error("Weekly report generation failed:", error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// Schedule weekly audit alert on Friday at 5 PM (Suggesting it over Websockets)
+cron.schedule("0 17 * * 5", async () => {
+  console.log("Cron triggering weekly audit recommendation...");
+  try {
+    const accounts = await prisma.account.findMany();
+    for (const acc of accounts) {
+      broadcast({
+        type: "AUDIT_SUGGESTION",
+        account_id: acc.account_id,
+        message: "The trading week has wrapped up! Click here to generate your Weekly Performance Audit.",
+      });
+    }
+  } catch (err) {
+    console.error("Error sending weekly audit alerts:", err);
   }
 });
 

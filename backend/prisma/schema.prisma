@@ -28,6 +28,7 @@ model Account {
   trades          Trade[]
   chat_messages   ChatMessage[]
   daily_charts    DailyChart[]
+  weekly_reports  WeeklyReport[]
 }
 
 model Trade {
@@ -113,6 +114,16 @@ model DailyChart {
   chart_id   String   @id @default(uuid())
   date_str   String   // The date string, e.g. "5-26-2026"
   image_path String   // The path where the uploaded image is saved on the backend server
+  account_id String
+  account    Account  @relation(fields: [account_id], references: [account_id], onDelete: Cascade)
+  created_at DateTime @default(now())
+}
+
+model WeeklyReport {
+  report_id  String   @id @default(uuid())
+  start_date DateTime
+  end_date   DateTime
+  summary_md String
   account_id String
   account    Account  @relation(fields: [account_id], references: [account_id], onDelete: Cascade)
   created_at DateTime @default(now())

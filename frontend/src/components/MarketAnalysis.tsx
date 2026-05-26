@@ -1,6 +1,8 @@
+import { useState } from "react";
 import { X, TrendingUp, TrendingDown, Activity, BarChart3, Shield, AlertTriangle } from "lucide-react";
+import { useToast } from "../contexts/ToastContext";
 
-interface RegimeData {
+export interface RegimeData {
   regime_type?: string;
   vix_level?: number;
   fed_funds_rate?: number;
@@ -37,14 +39,29 @@ function regimeColor(regime: string) {
   return "var(--accent-red)";
 }
 
-function regimeIcon(regime: string) {
-  if (regime.includes("Bullish")) return TrendingUp;
-  if (regime.includes("Bearish") && regime.includes("High")) return AlertTriangle;
-  return TrendingDown;
-}
-
 export default function MarketAnalysis({ regime, onClose }: Props) {
-  const RegimeIcon = regimeIcon(regime.regime_type || "");
+  const [isRunning, setIsRunning] = useState(false);
+  const toast = useToast();
+
+  const handleTriggerHMM = async () => {
+    setIsRunning(true);
+    toast.info("Triggered Hidden Markov Model classification in the background...", "Market Regime Pipeline");
+    try {
+      const res = await fetch("http://localhost:5000/api/market/regime/trigger", {
+        method: "POST",
+      });
+      if (res.ok) {
+        toast.success("HMM regime calculation spawned! Results will broadcast on completion.");
+      } else {
+        toast.error("Failed to trigger HMM regime script.");
+      }
+    } catch {
+      toast.error("Network error triggering HMM script.");
+    } finally {
+      setIsRunning(false);
+    }
+  };
+
   const color = regimeColor(regime.regime_type || "");
   const profiles = regime.state_profiles || [];
   const hasLiveData = regime.spx_close !== undefined && regime.spx_close !== 5800;
@@ -87,7 +104,13 @@ export default function MarketAnalysis({ regime, onClose }: Props) {
                   border: `1px solid ${color}40`,
                 }}
               >
-                <RegimeIcon size={22} style={{ color }} />
+                {(regime.regime_type || "").includes("Bullish") ? (
+                  <TrendingUp size={22} style={{ color }} />
+                ) : (regime.regime_type || "").includes("Bearish") && (regime.regime_type || "").includes("High") ? (
+                  <AlertTriangle size={22} style={{ color }} />
+                ) : (
+                  <TrendingDown size={22} style={{ color }} />
+                )}
               </div>
               <h2 style={{ fontSize: "1.3rem", fontWeight: 700, color }}>{regime.regime_type}</h2>
             </div>
@@ -108,6 +131,21 @@ export default function MarketAnalysis({ regime, onClose }: Props) {
             Showing default values. Run <code style={{ background: "var(--bg-tertiary)", padding: "2px 6px", borderRadius: "4px" }}>npm run ml:run</code> to populate with live market data from Yahoo Finance and FRED.
           </div>
         )}
+
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "20px", background: "var(--neutral-bg)", border: "1px solid var(--border-color)", borderRadius: "8px", padding: "12px 16px" }}>
+          <div>
+            <div style={{ fontSize: "0.85rem", fontWeight: 600 }}>Hidden Markov Model Classifier</div>
+            <div style={{ fontSize: "0.7rem", color: "var(--text-secondary)", marginTop: "2px" }}>Train model on 5 years of daily data to classify market states.</div>
+          </div>
+          <button 
+            className="btn-primary" 
+            onClick={handleTriggerHMM} 
+            disabled={isRunning}
+            style={{ fontSize: "0.75rem", padding: "6px 12px" }}
+          >
+            {isRunning ? "Running ML..." : "Recalculate HMM Regime"}
+          </button>
+        </div>
 
         <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "14px", marginBottom: "20px" }}>
           <MetricCard icon={<Activity size={16} />} label="VIX Level" value={`${regime.vix_level?.toFixed(1) ?? "—"}`} detail={regime.vix_percentile != null ? `${regime.vix_percentile.toFixed(0)}th percentile (5Y)` : undefined} color={(regime.vix_level ?? 0) > 25 ? "var(--accent-red)" : (regime.vix_level ?? 0) > 18 ? "var(--accent-gold)" : "var(--accent-green)"} />

@@ -11,6 +11,40 @@ interface AICoachProps {
   onRefreshTrades: () => void;
 }
 
+export interface AnalysisReport {
+  summary: {
+    matchedCount: number;
+    ghostCount: number;
+    orphanCount: number;
+    totalSlippage: number;
+    totalStatementExecutions: number;
+  };
+  matched: Array<{
+    manual: {
+      symbol: string;
+      side: string;
+      fill_price: number;
+    };
+    statement: {
+      quantity: number;
+      fillPrice: number;
+    };
+    slippage: number;
+  }>;
+  ghosts: Array<{
+    symbol: string;
+    side: string;
+    quantity: number;
+    fillPrice: number;
+  }>;
+  orphans: Array<{
+    symbol: string;
+    side: string;
+    quantity: number;
+    fill_price: number;
+  }>;
+}
+
 export default function AICoach({ accountId, onRefreshTrades }: AICoachProps) {
   // Conversational Chat State
   const [messages, setMessages] = useState<Message[]>([
@@ -29,7 +63,7 @@ export default function AICoach({ accountId, onRefreshTrades }: AICoachProps) {
   const [isIngesting, setIsIngesting] = useState(false);
   const [ingestStatus, setIngestStatus] = useState<{ success: boolean; message: string } | null>(null);
   
-  const [analysisReport, setAnalysisReport] = useState<any | null>(null);
+  const [analysisReport, setAnalysisReport] = useState<AnalysisReport | null>(null);
   const [isSyncing, setIsSyncing] = useState(false);
   const [syncStatus, setSyncStatus] = useState<{ success: boolean; message: string } | null>(null);
 
@@ -65,7 +99,7 @@ export default function AICoach({ accountId, onRefreshTrades }: AICoachProps) {
               role: "assistant",
               content: "Hello! I am your Antigravity Quantitative Trading Coach. I analyze your trade entries, scaling behavior, qualitative emotional tags, and current Hidden Markov Model market regimes. Ask me anything, or run one of the diagnostics below.",
             },
-            ...data.map((m: any) => ({ role: m.role, content: m.content })),
+            ...data.map((m: Message) => ({ role: m.role, content: m.content })),
           ]);
         } else {
           setMessages([
@@ -99,7 +133,7 @@ export default function AICoach({ accountId, onRefreshTrades }: AICoachProps) {
   };
 
   // Sends query to Express SSE Coach endpoint
-  const handleSendMessage = async (queryText: string, reportData: any = null) => {
+  const handleSendMessage = async (queryText: string, reportData: AnalysisReport | null = null) => {
     if (!queryText.trim() || !accountId) return;
 
     // Append user message
@@ -163,7 +197,7 @@ export default function AICoach({ accountId, onRefreshTrades }: AICoachProps) {
         setIsTyping(false);
       };
 
-    } catch (e: any) {
+    } catch (e) {
       console.error(e);
       setIsTyping(false);
     }
@@ -193,7 +227,7 @@ export default function AICoach({ accountId, onRefreshTrades }: AICoachProps) {
       } else {
         setIngestStatus({ success: false, message: data.error || "Analysis failed" });
       }
-    } catch (e) {
+    } catch {
       setIngestStatus({ success: false, message: "Server connection failed" });
     } finally {
       setIsIngesting(false);
@@ -226,7 +260,7 @@ export default function AICoach({ accountId, onRefreshTrades }: AICoachProps) {
       } else {
         setSyncStatus({ success: false, message: data.error || "Sync failed" });
       }
-    } catch (e) {
+    } catch {
       setSyncStatus({ success: false, message: "Server connection failed" });
     } finally {
       setIsSyncing(false);
@@ -487,7 +521,7 @@ export default function AICoach({ accountId, onRefreshTrades }: AICoachProps) {
                 </thead>
                 <tbody>
                   {/* Matched */}
-                  {analysisReport.matched.map((m: any, idx: number) => (
+                  {analysisReport.matched.map((m, idx) => (
                     <tr key={`matched-${idx}`} style={{ borderBottom: "1px solid var(--border-color)" }}>
                       <td style={{ padding: "10px" }}>
                         <span style={{ display: "inline-block", padding: "2px 6px", borderRadius: "4px", fontSize: "0.7rem", fontWeight: "bold", background: "var(--green-bg-strong)", color: "var(--accent-green)", border: "1px solid var(--green-border)" }}>
@@ -509,7 +543,7 @@ export default function AICoach({ accountId, onRefreshTrades }: AICoachProps) {
                   ))}
 
                   {/* Ghosts */}
-                  {analysisReport.ghosts.map((g: any, idx: number) => (
+                  {analysisReport.ghosts.map((g, idx) => (
                     <tr key={`ghost-${idx}`} style={{ borderBottom: "1px solid var(--border-color)" }}>
                       <td style={{ padding: "10px" }}>
                         <span style={{ display: "inline-block", padding: "2px 6px", borderRadius: "4px", fontSize: "0.7rem", fontWeight: "bold", background: "var(--gold-bg)", color: "var(--accent-gold)", border: "1px solid rgba(255, 183, 0, 0.2)" }}>
@@ -531,7 +565,7 @@ export default function AICoach({ accountId, onRefreshTrades }: AICoachProps) {
                   ))}
 
                   {/* Orphans */}
-                  {analysisReport.orphans.map((o: any, idx: number) => (
+                  {analysisReport.orphans.map((o, idx) => (
                     <tr key={`orphan-${idx}`} style={{ borderBottom: "1px solid var(--border-color)" }}>
                       <td style={{ padding: "10px" }}>
                         <span style={{ display: "inline-block", padding: "2px 6px", borderRadius: "4px", fontSize: "0.7rem", fontWeight: "bold", background: "var(--red-bg-strong)", color: "var(--accent-red)", border: "1px solid var(--red-border)" }}>

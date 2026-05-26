@@ -1,6 +1,5 @@
 import os
 import sys
-import json
 import datetime
 import time
 import numpy as np
@@ -276,7 +275,7 @@ def main():
         f"Recent returns: 5D {last5:+.2f}%, 20D {last20:+.2f}%, 60D {last60:+.2f}%."
     )
 
-    print(f"\nCurrent Market State Classified:")
+    print("\nCurrent Market State Classified:")
     print(f" - Regime Type: {current_regime}")
     print(f" - S&P 500 Close: {spx_close:.2f} ({spx_trend})")
     print(f" - VIX Volatility index: {current_vix:.2f}")

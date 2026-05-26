@@ -1,7 +1,8 @@
-import { useState, useEffect } from "react";
+import { useState, useEffect, useCallback } from "react";
 import { 
   TrendingUp, BarChart3, Calendar as CalendarIcon, 
-  RefreshCw, Play, Brain, Activity, Settings as SettingsIcon
+  RefreshCw, Play, Brain, Activity, Settings as SettingsIcon,
+  BookOpen
 } from "lucide-react";
 import Dashboard from "./components/Dashboard";
 import type { Trade, Stats } from "./components/Dashboard";
@@ -11,10 +12,14 @@ import TradeReplay from "./components/TradeReplay";
 import AICoach from "./components/AICoach";
 import Settings from "./components/Settings";
 import MarketAnalysis from "./components/MarketAnalysis";
+import type { RegimeData } from "./components/MarketAnalysis";
+import Playbooks from "./components/Playbooks";
 import { useSettings } from "./contexts/SettingsContext";
+import { useToast } from "./contexts/ToastContext";
 
 export default function App() {
   const { settings } = useSettings();
+  const toast = useToast();
   const [activeTab, setActiveTab] = useState<string>("dashboard");
   const [accountId, setAccountId] = useState<string>("");
   const [accountBalance, setAccountBalance] = useState<number>(50000);
@@ -35,12 +40,12 @@ export default function App() {
   });
 
   const [selectedTrade, setSelectedTrade] = useState<Trade | null>(null);
-  const [marketRegime, setMarketRegime] = useState<Record<string, any>>({ regime_type: "Bullish - Low Volatility" });
+  const [marketRegime, setMarketRegime] = useState<RegimeData>({ regime_type: "Bullish - Low Volatility" });
   const [showMarketAnalysis, setShowMarketAnalysis] = useState(false);
   const [wsStatus, setWsStatus] = useState<"connected" | "disconnected">("disconnected");
 
   // 1. Fetch or initialize default account
-  const loadAccount = async () => {
+  const loadAccount = useCallback(async () => {
     try {
       const res = await fetch("http://localhost:5000/api/accounts");
       const data = await res.json();
@@ -65,10 +70,10 @@ export default function App() {
     } catch (e) {
       console.error("Failed to load account:", e);
     }
-  };
+  }, []);
 
   // 2. Fetch trades & statistics
-  const loadDashboardData = async () => {
+  const loadDashboardData = useCallback(async () => {
     if (!accountId) return;
     try {
       const tradesRes = await fetch(`http://localhost:5000/api/trades?accountId=${accountId}`);
@@ -85,16 +90,18 @@ export default function App() {
     } catch (e) {
       console.error("Error refreshing dashboard stats:", e);
     }
-  };
+  }, [accountId]);
 
   // Run on mount
   useEffect(() => {
+    // eslint-disable-next-line react-hooks/set-state-in-effect
     loadAccount();
-  }, []);
+  }, [loadAccount]);
 
   // Run when accountId is set
   useEffect(() => {
     if (accountId) {
+      // eslint-disable-next-line react-hooks/set-state-in-effect
       loadDashboardData();
 
       // Establish WebSocket connection for real-time live data syncing
@@ -114,11 +121,21 @@ export default function App() {
             data.type === "TRADE_CREATED" || 
             data.type === "TRADE_UPDATED" || 
             data.type === "REGIME_SHIFT" || 
-            data.type === "IRONBEAM_PARSED"
+            data.type === "IRONBEAM_PARSED" ||
+            data.type === "WEEKLY_REPORT_GENERATED"
           ) {
             loadDashboardData();
           }
-        } catch (e) {
+
+          if (data.type === "REGIME_SHIFT") {
+            setMarketRegime(data.regime);
+            toast.info(`Market regime shifted to: ${data.regime.regime_type}`, "Market Regime Shift");
+          } else if (data.type === "WEEKLY_REPORT_GENERATED") {
+            toast.success("A new AI weekly performance audit report is available! Check the Playbooks & Audits tab.");
+          } else if (data.type === "AUDIT_SUGGESTION") {
+            toast.nudge(data.message, "AI Coach Suggestion");
+          }
+        } catch {
           // Parse fails
         }
       };
@@ -132,7 +149,7 @@ export default function App() {
         ws.close();
       };
     }
-  }, [accountId]);
+  }, [accountId, loadDashboardData, toast]);
 
   const handleSelectTradeForReplay = (trade: Trade) => {
     setSelectedTrade(trade);
@@ -235,6 +252,23 @@ export default function App() {
             >
               <Brain size={18} />
               AI Quant Coach
+            </button>
+
+            <button
+              className={`btn-secondary`}
+              style={{
+                display: "flex",
+                alignItems: "center",
+                gap: "12px",
+                textAlign: "left",
+                justifyContent: "flex-start",
+                borderColor: activeTab === "playbooks" ? "var(--accent-blue)" : "transparent",
+                background: activeTab === "playbooks" ? "var(--accent-bg)" : "transparent"
+              }}
+              onClick={() => setActiveTab("playbooks")}
+            >
+              <BookOpen size={18} />
+              Playbooks & Audits
             </button>
 
             <button
@@ -369,15 +403,29 @@ export default function App() {
           )}
 
           {activeTab === "replay" && selectedTrade && (
-            <TradeReplay trade={selectedTrade} />
+            <TradeReplay key={selectedTrade.trade_id} trade={selectedTrade} />
           )}
 
           {activeTab === "coach" && (
             <AICoach accountId={accountId} onRefreshTrades={loadDashboardData} />
           )}
 
+          {activeTab === "playbooks" && (
+            <Playbooks 
+              accountId={accountId} 
+              trades={trades} 
+              onRefreshTrades={loadDashboardData} 
+            />
+          )}
+
           {activeTab === "settings" && (
-            <Settings />
+            <Settings 
+              accountId={accountId} 
+              onAccountUpdated={() => {
+                loadAccount();
+                loadDashboardData();
+              }} 
+            />
           )}
         </main>
       </div>

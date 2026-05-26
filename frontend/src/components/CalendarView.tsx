@@ -1,10 +1,22 @@
-import { useState, useEffect } from "react";
+import { useState, useEffect, useCallback } from "react";
 import { ChevronLeft, ChevronRight, Flame, X, MessageSquare, Download, Calendar, UploadCloud, Trash2 } from "lucide-react";
 import type { Trade } from "./Dashboard";
 
 interface CalendarViewProps {
   trades: Trade[];
   accountId: string;
+}
+
+interface CalendarChatMessage {
+  message_id?: string;
+  role: string;
+  content: string;
+  created_at: string;
+}
+
+interface CalendarChart {
+  chart_id: string;
+  image_path: string;
 }
 
 const MONTHS = [
@@ -17,8 +29,8 @@ const YEARS = [2024, 2025, 2026, 2027, 2028];
 export default function CalendarView({ trades, accountId }: CalendarViewProps) {
   const [currentDate, setCurrentDate] = useState(new Date());
   const [selectedDay, setSelectedDay] = useState<number | null>(null);
-  const [allChats, setAllChats] = useState<any[]>([]);
-  const [dayCharts, setDayCharts] = useState<any[]>([]);
+  const [allChats, setAllChats] = useState<CalendarChatMessage[]>([]);
+  const [dayCharts, setDayCharts] = useState<CalendarChart[]>([]);
   const [isUploading, setIsUploading] = useState(false);
   const [activeLightboxImage, setActiveLightboxImage] = useState<string | null>(null);
 
@@ -39,7 +51,7 @@ export default function CalendarView({ trades, accountId }: CalendarViewProps) {
   }, [accountId]);
 
   // Fetch charts for the selected day
-  const fetchDayCharts = (dayNum: number) => {
+  const fetchDayCharts = useCallback((dayNum: number) => {
     if (!accountId) return;
     const dateStr = new Date(year, month, dayNum).toLocaleDateString();
     fetch(`http://localhost:5000/api/charts?accountId=${accountId}&dateStr=${encodeURIComponent(dateStr)}`)
@@ -50,15 +62,16 @@ export default function CalendarView({ trades, accountId }: CalendarViewProps) {
         }
       })
       .catch((err) => console.error("Error fetching day charts:", err));
-  };
+  }, [accountId, year, month]);
 
   useEffect(() => {
     if (selectedDay) {
       fetchDayCharts(selectedDay);
     } else {
+      // eslint-disable-next-line react-hooks/set-state-in-effect
       setDayCharts([]);
     }
-  }, [selectedDay, month, year, accountId]);
+  }, [selectedDay, fetchDayCharts]);
 
   // Aggregate P&L by Date string (MM/DD/YYYY)
   const dailyPnLs: { [dateStr: string]: { pnl: number; trades: Trade[] } } = {};
@@ -198,8 +211,8 @@ export default function CalendarView({ trades, accountId }: CalendarViewProps) {
   };
 
   // Check if a day has a green/red color code
-  const getDayStyles = (dayDetails: any, isSelected: boolean) => {
-    let base = {
+  const getDayStyles = (dayDetails: { pnl: number; trades: Trade[] } | null, isSelected: boolean) => {
+    const base = {
       background: "rgba(13, 22, 36, 0.4)",
       border: isSelected ? "2px solid var(--accent-blue)" : "1px solid var(--border-color)",
       color: "var(--text-secondary)",
@@ -228,7 +241,11 @@ export default function CalendarView({ trades, accountId }: CalendarViewProps) {
     return base;
   };
 
-  const handleExportDayReport = (dayNum: number, dayDetails: any, dayChats: any[]) => {
+  const handleExportDayReport = (
+    dayNum: number, 
+    dayDetails: { pnl: number; trades: Trade[] }, 
+    dayChats: CalendarChatMessage[]
+  ) => {
     const targetDateString = new Date(year, month, dayNum).toLocaleDateString();
     
     let report = `# Trading Performance Report: ${targetDateString}\n`;
@@ -237,7 +254,7 @@ export default function CalendarView({ trades, accountId }: CalendarViewProps) {
     report += `==========================================\n\n`;
     
     report += `## TRADES LOG\n`;
-    dayDetails.trades.forEach((t: any, idx: number) => {
+    dayDetails.trades.forEach((t, idx) => {
       report += `Trade #${idx + 1}: ${t.symbol} (${t.status})\n`;
       report += `- Net Realized P&L: $${Number(t.net_pnl).toFixed(2)}\n`;
       report += `- R-Multiple: ${Number(t.r_multiple).toFixed(2)}R\n`;
@@ -250,7 +267,7 @@ export default function CalendarView({ trades, accountId }: CalendarViewProps) {
       report += `- Notes: ${t.notes || "None"}\n`;
       if (t.executions && t.executions.length > 0) {
         report += `- Executions:\n`;
-        t.executions.forEach((e: any) => {
+        t.executions.forEach((e) => {
           report += `  * ${e.side} ${Number(e.quantity)} lot @ ${Number(e.fill_price).toFixed(2)} (${new Date(e.execution_timestamp).toLocaleTimeString()})\n`;
         });
       }
@@ -262,7 +279,7 @@ export default function CalendarView({ trades, accountId }: CalendarViewProps) {
     if (dayChats.length === 0) {
       report += `No AI Coach conversations logged on this day.\n`;
     } else {
-      dayChats.forEach((c: any) => {
+      dayChats.forEach((c) => {
         report += `[${new Date(c.created_at).toLocaleTimeString()}] ${c.role.toUpperCase()}:\n`;
         report += `${c.content}\n\n`;
       });

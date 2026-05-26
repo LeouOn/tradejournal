@@ -1,4 +1,37 @@
 "use strict";
+var __createBinding = (this && this.__createBinding) || (Object.create ? (function(o, m, k, k2) {
+    if (k2 === undefined) k2 = k;
+    var desc = Object.getOwnPropertyDescriptor(m, k);
+    if (!desc || ("get" in desc ? !m.__esModule : desc.writable || desc.configurable)) {
+      desc = { enumerable: true, get: function() { return m[k]; } };
+    }
+    Object.defineProperty(o, k2, desc);
+}) : (function(o, m, k, k2) {
+    if (k2 === undefined) k2 = k;
+    o[k2] = m[k];
+}));
+var __setModuleDefault = (this && this.__setModuleDefault) || (Object.create ? (function(o, v) {
+    Object.defineProperty(o, "default", { enumerable: true, value: v });
+}) : function(o, v) {
+    o["default"] = v;
+});
+var __importStar = (this && this.__importStar) || (function () {
+    var ownKeys = function(o) {
+        ownKeys = Object.getOwnPropertyNames || function (o) {
+            var ar = [];
+            for (var k in o) if (Object.prototype.hasOwnProperty.call(o, k)) ar[ar.length] = k;
+            return ar;
+        };
+        return ownKeys(o);
+    };
+    return function (mod) {
+        if (mod && mod.__esModule) return mod;
+        var result = {};
+        if (mod != null) for (var k = ownKeys(mod), i = 0; i < k.length; i++) if (k[i] !== "default") __createBinding(result, mod, k[i]);
+        __setModuleDefault(result, mod);
+        return result;
+    };
+})();
 var __importDefault = (this && this.__importDefault) || function (mod) {
     return (mod && mod.__esModule) ? mod : { "default": mod };
 };
@@ -12,6 +45,12 @@ const client_1 = require("@prisma/client");
 const aiRouter_1 = require("./services/aiRouter");
 const metrics_1 = require("./utils/metrics");
 const multipliers_1 = require("./utils/multipliers");
+const fs_1 = __importDefault(require("fs"));
+const path_1 = __importDefault(require("path"));
+const externalApi_1 = __importStar(require("./routes/externalApi"));
+const child_process_1 = require("child_process");
+const node_cron_1 = __importDefault(require("node-cron"));
+const openai_1 = require("openai");
 dotenv_1.default.config();
 const app = (0, express_1.default)();
 const server = http_1.default.createServer(app);
@@ -19,7 +58,15 @@ const wss = new ws_1.WebSocketServer({ server });
 const prisma = new client_1.PrismaClient();
 const PORT = process.env.PORT || 5000;
 app.use((0, cors_1.default)());
-app.use(express_1.default.json());
+app.use(express_1.default.json({ limit: "50mb" }));
+app.use(express_1.default.urlencoded({ limit: "50mb", extended: true }));
+const uploadsDir = path_1.default.join(process.cwd(), "uploads");
+if (!fs_1.default.existsSync(uploadsDir)) {
+    fs_1.default.mkdirSync(uploadsDir);
+}
+app.use("/uploads", express_1.default.static(uploadsDir));
+// Wire up the external API router for Marketpulse
+app.use("/api/external", externalApi_1.default);
 // Active WebSocket connections
 const clients = new Set();
 wss.on("connection", (ws) => {
@@ -57,6 +104,10 @@ let currentMarketRegime = {
     regime_description: "Market regime classification pending. Run the ML pipeline (npm run ml:run) to populate with live data.",
     state_profiles: [],
 };
+(0, externalApi_1.setRegimeUpdater)((newRegime) => {
+    currentMarketRegime = { ...currentMarketRegime, ...newRegime };
+    broadcast({ type: "REGIME_SHIFT", regime: currentMarketRegime });
+});
 /**
  * ----------------------------------------------------
  * ACCOUNTS ENDPOINTS
@@ -205,7 +256,19 @@ async function updateTradeCalculations(tradeId, initialRisk = 100) {
         }
     }
     // R-Multiple
-    const rMultiple = initialRisk > 0 ? netPnl / initialRisk : 0;
+    let calculatedRisk = initialRisk;
+    const stopLossVal = trade.stop_loss ? Number(trade.stop_loss) : 0;
+    if (stopLossVal > 0 && totalEntryQty > 0) {
+        const firstEntryPrice = executions[0].fill_price ? Number(executions[0].fill_price) : avgEntryPrice;
+        const firstEntryQty = executions[0].quantity ? Number(executions[0].quantity) : totalEntryQty;
+        const multiplier = (0, multipliers_1.getSymbolMultiplier)(trade.symbol);
+        const riskPoints = Math.abs(firstEntryPrice - stopLossVal);
+        calculatedRisk = riskPoints * firstEntryQty * multiplier;
+    }
+    if (calculatedRisk <= 0) {
+        calculatedRisk = initialRisk || 100;
+    }
+    const rMultiple = calculatedRisk > 0 ? netPnl / calculatedRisk : 0;
     // Duration
     let duration = 0;
     if (executions.length > 1) {
@@ -224,7 +287,7 @@ async function updateTradeCalculations(tradeId, initialRisk = 100) {
     });
 }
 app.post("/api/trades", async (req, res) => {
-    const { symbol, account_id, initial_risk, rules_followed, notes, tags, status, manual_status, bias, bias_reversal, trade_type } = req.body;
+    const { symbol, account_id, initial_risk, rules_followed, notes, tags, status, manual_status, bias, bias_reversal, trade_type, created_at, stop_loss } = req.body;
     try {
         // 1. Generate text embedding for qualitative notes in background
         let embeddingStr = null;
@@ -245,6 +308,8 @@ app.post("/api/trades", async (req, res) => {
                 bias: bias || "RANGE",
                 bias_reversal: bias_reversal !== undefined ? bias_reversal : false,
                 trade_type: trade_type || "BREAKOUT",
+                created_at: created_at ? new Date(created_at) : undefined,
+                stop_loss: stop_loss !== undefined && stop_loss !== null ? Number(stop_loss) : null,
             },
         });
         // 3. Connect Tags
@@ -285,7 +350,7 @@ app.post("/api/trades", async (req, res) => {
 // Update trade fields (e.g. status, notes, tags, rules_followed, initial risk)
 app.patch("/api/trades/:tradeId", async (req, res) => {
     const { tradeId } = req.params;
-    const { status, manual_status, notes, rules_followed, tags, initial_risk, bias, bias_reversal, trade_type } = req.body;
+    const { status, manual_status, notes, rules_followed, tags, initial_risk, bias, bias_reversal, trade_type, stop_loss } = req.body;
     try {
         const existingTrade = await prisma.trade.findUnique({
             where: { trade_id: tradeId },
@@ -336,6 +401,7 @@ app.patch("/api/trades/:tradeId", async (req, res) => {
                 bias: bias !== undefined ? bias : existingTrade.bias,
                 bias_reversal: bias_reversal !== undefined ? bias_reversal : existingTrade.bias_reversal,
                 trade_type: trade_type !== undefined ? trade_type : existingTrade.trade_type,
+                stop_loss: stop_loss !== undefined ? (stop_loss !== null ? Number(stop_loss) : null) : undefined,
             },
         });
         // 4. Trigger calculations update (handles P&L and metrics)
@@ -704,7 +770,7 @@ app.get("/api/market/regime", (req, res) => {
  * ----------------------------------------------------
  */
 app.get("/api/ai/coach", async (req, res) => {
-    const { accountId, query, reconciliationReport } = req.query;
+    const { accountId, query, reconciliationReport, model } = req.query;
     if (!accountId || !query) {
         return res.status(400).json({ error: "accountId and query parameters are required" });
     }
@@ -716,11 +782,37 @@ app.get("/api/ai/coach", async (req, res) => {
     const keepAlive = setInterval(() => {
         res.write(":\n\n");
     }, 15000);
+    // Save the user message to ChatMessage table
     try {
-        await (0, aiRouter_1.streamAICoach)(String(accountId), String(query), reconciliationReport ? String(reconciliationReport) : null, (token) => {
+        await prisma.chatMessage.create({
+            data: {
+                role: "user",
+                content: String(query),
+                account_id: String(accountId),
+            },
+        });
+    }
+    catch (e) {
+        console.error("Failed to save user chat log:", e);
+    }
+    try {
+        await (0, aiRouter_1.streamAICoach)(String(accountId), String(query), reconciliationReport ? String(reconciliationReport) : null, model ? String(model) : null, (token) => {
             // Send SSE message block
             res.write(`data: ${JSON.stringify({ token })}\n\n`);
-        }, (fullText) => {
+        }, async (fullText) => {
+            // Save the assistant message to ChatMessage table on completion
+            try {
+                await prisma.chatMessage.create({
+                    data: {
+                        role: "assistant",
+                        content: fullText,
+                        account_id: String(accountId),
+                    },
+                });
+            }
+            catch (e) {
+                console.error("Failed to save assistant chat log:", e);
+            }
             res.write(`data: ${JSON.stringify({ complete: true, fullText })}\n\n`);
             clearInterval(keepAlive);
             res.end();
@@ -732,6 +824,52 @@ app.get("/api/ai/coach", async (req, res) => {
         res.write(`data: ${JSON.stringify({ complete: true })}\n\n`);
         clearInterval(keepAlive);
         res.end();
+    }
+});
+// Endpoint to fetch available models
+app.get("/api/ai/models", async (req, res) => {
+    try {
+        const models = await (0, aiRouter_1.getAvailableModels)();
+        res.json(models);
+    }
+    catch (error) {
+        console.error("Failed to fetch AI models:", error);
+        res.status(500).json({ error: error.message });
+    }
+});
+// Endpoint to fetch chat message history for an account
+app.get("/api/ai/chats", async (req, res) => {
+    const { accountId } = req.query;
+    if (!accountId) {
+        return res.status(400).json({ error: "accountId is required" });
+    }
+    try {
+        const chats = await prisma.chatMessage.findMany({
+            where: { account_id: String(accountId) },
+            orderBy: { created_at: "asc" },
+        });
+        res.json(chats);
+    }
+    catch (error) {
+        console.error("Failed to fetch chat logs:", error);
+        res.status(500).json({ error: error.message });
+    }
+});
+// Endpoint to clear/delete chat history for an account
+app.delete("/api/ai/chats", async (req, res) => {
+    const { accountId } = req.query;
+    if (!accountId) {
+        return res.status(400).json({ error: "accountId is required" });
+    }
+    try {
+        await prisma.chatMessage.deleteMany({
+            where: { account_id: String(accountId) },
+        });
+        res.json({ success: true, message: "Chat history cleared successfully" });
+    }
+    catch (error) {
+        console.error("Failed to clear chat logs:", error);
+        res.status(500).json({ error: error.message });
     }
 });
 /**
@@ -1005,6 +1143,266 @@ app.post("/api/ingest/ironbeam/sync", async (req, res) => {
     catch (error) {
         console.error("Sync statement error:", error);
         res.status(500).json({ error: error.message });
+    }
+});
+// Upload a chart screenshot
+app.post("/api/charts/upload", async (req, res) => {
+    const { accountId, dateStr, imageData } = req.body;
+    if (!accountId || !dateStr || !imageData) {
+        return res.status(400).json({ error: "accountId, dateStr, and imageData are required" });
+    }
+    try {
+        // 1. Validate and parse base64 image
+        const matches = imageData.match(/^data:image\/([A-Za-z-+]+);base64,(.+)$/);
+        if (!matches || matches.length !== 3) {
+            return res.status(400).json({ error: "Invalid image base64 format" });
+        }
+        const extension = matches[1];
+        const imageBuffer = Buffer.from(matches[2], "base64");
+        // 2. Generate unique filename and write to disk
+        const cleanDate = dateStr.replace(/\//g, "-").replace(/:/g, "-");
+        const filename = `${accountId}_${cleanDate}_${Date.now()}.${extension}`;
+        const filePath = path_1.default.join(uploadsDir, filename);
+        fs_1.default.writeFileSync(filePath, imageBuffer);
+        // 3. Save to database
+        const relativePath = `/uploads/${filename}`;
+        const chart = await prisma.dailyChart.create({
+            data: {
+                date_str: dateStr,
+                image_path: relativePath,
+                account_id: accountId,
+            },
+        });
+        res.json(chart);
+    }
+    catch (error) {
+        console.error("Failed to upload chart:", error);
+        res.status(500).json({ error: error.message });
+    }
+});
+// Get all chart screenshots for a day
+app.get("/api/charts", async (req, res) => {
+    const { accountId, dateStr } = req.query;
+    if (!accountId || !dateStr) {
+        return res.status(400).json({ error: "accountId and dateStr are required" });
+    }
+    try {
+        const charts = await prisma.dailyChart.findMany({
+            where: {
+                account_id: String(accountId),
+                date_str: String(dateStr),
+            },
+            orderBy: { created_at: "asc" },
+        });
+        res.json(charts);
+    }
+    catch (error) {
+        console.error("Failed to fetch daily charts:", error);
+        res.status(500).json({ error: error.message });
+    }
+});
+// Delete a chart screenshot
+app.delete("/api/charts/:chartId", async (req, res) => {
+    const { chartId } = req.params;
+    try {
+        const chart = await prisma.dailyChart.findUnique({
+            where: { chart_id: chartId },
+        });
+        if (!chart) {
+            return res.status(404).json({ error: "Chart not found" });
+        }
+        // Delete file from disk
+        const filename = path_1.default.basename(chart.image_path);
+        const filePath = path_1.default.join(uploadsDir, filename);
+        if (fs_1.default.existsSync(filePath)) {
+            fs_1.default.unlinkSync(filePath);
+        }
+        // Delete from database
+        await prisma.dailyChart.delete({
+            where: { chart_id: chartId },
+        });
+        res.json({ success: true, message: "Chart screenshot deleted" });
+    }
+    catch (error) {
+        console.error("Failed to delete chart:", error);
+        res.status(500).json({ error: error.message });
+    }
+});
+/**
+ * ----------------------------------------------------
+ * ACCOUNT CUSTOMIZATION
+ * ----------------------------------------------------
+ */
+app.patch("/api/accounts/:accountId", async (req, res) => {
+    const { accountId } = req.params;
+    const { account_name, broker_name, initial_balance } = req.body;
+    try {
+        const updatedAccount = await prisma.account.update({
+            where: { account_id: accountId },
+            data: {
+                account_name,
+                broker_name,
+                initial_balance: initial_balance !== undefined ? Number(initial_balance) : undefined,
+            },
+        });
+        res.json(updatedAccount);
+    }
+    catch (error) {
+        res.status(500).json({ error: error.message });
+    }
+});
+/**
+ * ----------------------------------------------------
+ * HMM REGIME BACKGROUND PIPELINE
+ * ----------------------------------------------------
+ */
+function runHMMClassifier() {
+    const pythonExe = path_1.default.resolve(__dirname, "../../ml_pipeline/.venv/Scripts/python.exe");
+    const scriptFile = path_1.default.resolve(__dirname, "../../ml_pipeline/regime_classifier.py");
+    console.log(`Spawning HMM classifier: ${pythonExe} ${scriptFile}`);
+    const py = (0, child_process_1.spawn)(pythonExe, [scriptFile]);
+    py.stdout.on("data", (data) => {
+        console.log(`HMM stdout: ${data}`);
+    });
+    py.stderr.on("data", (data) => {
+        console.error(`HMM stderr: ${data}`);
+    });
+    py.on("close", (code) => {
+        console.log(`HMM process completed with code ${code}`);
+    });
+}
+app.post("/api/market/regime/trigger", (req, res) => {
+    try {
+        runHMMClassifier();
+        res.json({ success: true, message: "HMM regime classification task triggered." });
+    }
+    catch (e) {
+        res.status(500).json({ error: e.message });
+    }
+});
+// Schedule daily HMM run at midnight
+node_cron_1.default.schedule("0 0 * * *", () => {
+    console.log("Cron triggering daily HMM run...");
+    runHMMClassifier();
+});
+/**
+ * ----------------------------------------------------
+ * WEEKLY PERFORMANCE AUDITS (ON-DEMAND / SUGGESTIONS)
+ * ----------------------------------------------------
+ */
+async function generateWeeklyAuditReport(accountId, startDate, endDate) {
+    const account = await prisma.account.findUnique({
+        where: { account_id: accountId },
+    });
+    if (!account)
+        throw new Error("Account not found");
+    const trades = await prisma.trade.findMany({
+        where: {
+            account_id: accountId,
+            created_at: {
+                gte: startDate,
+                lte: endDate,
+            },
+        },
+        include: { executions: true, trade_tags: { include: { tag: true } }, market_context: true },
+    });
+    const metrics = (0, metrics_1.calculateMetrics)(trades, Number(account.initial_balance));
+    const tradeSummaryList = trades.map((t) => {
+        const tags = t.trade_tags.map(tt => tt.tag.tag_name).join(", ");
+        return `- Trade: ${t.symbol} | P&L: $${Number(t.net_pnl).toFixed(2)} | Rules Followed: ${t.rules_followed ? "YES" : "NO"} | Tags: ${tags || "None"} | Notes: ${t.notes || "None"}`;
+    }).join("\n");
+    const prompt = `
+Generate a Weekly Performance Audit report for the trader.
+Account Name: ${account.account_name} (${account.broker_name})
+Date Range: ${startDate.toLocaleDateString()} to ${endDate.toLocaleDateString()}
+
+Weekly Metrics:
+- Total Closed Trades: ${metrics.totalTrades}
+- Win Rate: ${(metrics.winRate * 100).toFixed(1)}%
+- Profit Factor: ${metrics.profitFactor.toFixed(2)}
+- Net P&L: $${trades.reduce((acc, t) => acc + Number(t.net_pnl), 0).toFixed(2)}
+- Expectancy (R): +${metrics.expectancyR.toFixed(2)}R
+- Rule Adherence Rate: ${(metrics.ruleAdherenceRate * 100).toFixed(1)}%
+- Cost of Indiscipline: $${metrics.costOfIndiscipline.toFixed(2)}
+
+Weekly Trades Log:
+${tradeSummaryList || "No trades logged in this period."}
+
+Format the report beautifully in Markdown. Include:
+1. **Weekly Overview**: A summary of key statistics and performance.
+2. **Behavioral Analysis**: Audit of rules followed and cost of indiscipline. (If they broke rules, give them a gentle nudge on how discipline is key. Celebrate if they had 100% adherence!)
+3. **Setup and Regime Performance**: Analyze which setups or tags performed best under current market states.
+4. **Actionable Roadmap**: Clear adjustments for the next week (e.g. position sizing, tag-specific rules).
+`;
+    const baseURL = process.env.OPENAI_BASE_URL || "http://localhost:1234/v1";
+    const apiKey = process.env.OPENAI_API_KEY || "lm-studio";
+    const openaiClient = new openai_1.OpenAI({ baseURL, apiKey });
+    const models = await (0, aiRouter_1.getAvailableModels)();
+    const selectedModel = process.env.LLM_MODEL || models[0] || "local-model";
+    const completion = await openaiClient.chat.completions.create({
+        model: selectedModel,
+        messages: [
+            { role: "system", content: "You are the Antigravity Quantitative Trading Coach. Provide a detailed, constructive weekly performance audit formatted in clean Markdown." },
+            { role: "user", content: prompt }
+        ],
+        temperature: 0.3,
+    });
+    const summary_md = completion.choices[0]?.message?.content || "Failed to generate weekly report.";
+    const report = await prisma.weeklyReport.create({
+        data: {
+            account_id: accountId,
+            start_date: startDate,
+            end_date: endDate,
+            summary_md,
+        },
+    });
+    broadcast({ type: "WEEKLY_REPORT_GENERATED", report });
+    return report;
+}
+app.get("/api/weekly-reports", async (req, res) => {
+    const { accountId } = req.query;
+    try {
+        const reports = await prisma.weeklyReport.findMany({
+            where: accountId ? { account_id: String(accountId) } : undefined,
+            orderBy: { created_at: "desc" },
+        });
+        res.json(reports);
+    }
+    catch (error) {
+        res.status(500).json({ error: error.message });
+    }
+});
+app.post("/api/weekly-reports/trigger", async (req, res) => {
+    const { accountId, startDate, endDate } = req.body;
+    if (!accountId) {
+        return res.status(400).json({ error: "accountId is required." });
+    }
+    try {
+        const start = startDate ? new Date(startDate) : new Date(Date.now() - 7 * 24 * 60 * 60 * 1000);
+        const end = endDate ? new Date(endDate) : new Date();
+        const report = await generateWeeklyAuditReport(accountId, start, end);
+        res.json(report);
+    }
+    catch (error) {
+        console.error("Weekly report generation failed:", error);
+        res.status(500).json({ error: error.message });
+    }
+});
+// Schedule weekly audit alert on Friday at 5 PM (Suggesting it over Websockets)
+node_cron_1.default.schedule("0 17 * * 5", async () => {
+    console.log("Cron triggering weekly audit recommendation...");
+    try {
+        const accounts = await prisma.account.findMany();
+        for (const acc of accounts) {
+            broadcast({
+                type: "AUDIT_SUGGESTION",
+                account_id: acc.account_id,
+                message: "The trading week has wrapped up! Click here to generate your Weekly Performance Audit.",
+            });
+        }
+    }
+    catch (err) {
+        console.error("Error sending weekly audit alerts:", err);
     }
 });
 // Initialize server

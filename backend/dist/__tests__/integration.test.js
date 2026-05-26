@@ -260,4 +260,28 @@ describe("Integration Tests - Trading Journal Schema & Logic", () => {
         // Clean up
         await prisma.trade.delete({ where: { trade_id: originalTrade.trade_id } });
     });
+    test("DailyChart model CRUD operations", async () => {
+        const chart = await prisma.dailyChart.create({
+            data: {
+                date_str: "2026-05-26",
+                image_path: "/uploads/test_chart.png",
+                account_id: accountId,
+            },
+        });
+        expect(chart.chart_id).toBeDefined();
+        expect(chart.date_str).toBe("2026-05-26");
+        expect(chart.image_path).toBe("/uploads/test_chart.png");
+        const fetchedCharts = await prisma.dailyChart.findMany({
+            where: { account_id: accountId, date_str: "2026-05-26" },
+        });
+        expect(fetchedCharts.length).toBe(1);
+        expect(fetchedCharts[0].chart_id).toBe(chart.chart_id);
+        await prisma.dailyChart.delete({
+            where: { chart_id: chart.chart_id },
+        });
+        const deletedCharts = await prisma.dailyChart.findMany({
+            where: { chart_id: chart.chart_id },
+        });
+        expect(deletedCharts.length).toBe(0);
+    });
 });
