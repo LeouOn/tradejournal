@@ -1,51 +1,25 @@
-import { useState, useRef, useEffect } from "react";
-import { Send, Brain, Upload, FileText, CheckCircle, RotateCcw, Sparkles } from "lucide-react";
+import { useState, useRef, useEffect, KeyboardEvent } from "react";
+import { Send, Brain, Paperclip, X, RotateCcw, Pencil, Trash2, Check } from "lucide-react";
+import { useToast } from "../contexts/ToastContext";
+import { useSettings } from "../contexts/SettingsContext";
 
 interface Message {
   role: "user" | "assistant";
   content: string;
+  image?: string;
+  message_id?: string;
 }
 
 interface AICoachProps {
   accountId: string;
   onRefreshTrades: () => void;
+  compact?: boolean;
 }
 
-export interface AnalysisReport {
-  summary: {
-    matchedCount: number;
-    ghostCount: number;
-    orphanCount: number;
-    totalSlippage: number;
-    totalStatementExecutions: number;
-  };
-  matched: Array<{
-    manual: {
-      symbol: string;
-      side: string;
-      fill_price: number;
-    };
-    statement: {
-      quantity: number;
-      fillPrice: number;
-    };
-    slippage: number;
-  }>;
-  ghosts: Array<{
-    symbol: string;
-    side: string;
-    quantity: number;
-    fillPrice: number;
-  }>;
-  orphans: Array<{
-    symbol: string;
-    side: string;
-    quantity: number;
-    fill_price: number;
-  }>;
-}
+export default function AICoach({ accountId, onRefreshTrades, compact }: AICoachProps) {
+  const toast = useToast();
+  const { settings } = useSettings();
 
-export default function AICoach({ accountId, onRefreshTrades }: AICoachProps) {
   // Conversational Chat State
   const [messages, setMessages] = useState<Message[]>([
     {
@@ -56,20 +30,20 @@ export default function AICoach({ accountId, onRefreshTrades }: AICoachProps) {
   ]);
   const [inputMessage, setInputMessage] = useState("");
   const [isTyping, setIsTyping] = useState(false);
+  const [selectedImage, setSelectedImage] = useState<string | null>(null);
   const chatBottomRef = useRef<HTMLDivElement | null>(null);
-
-  // Ingest Statement State (Phase 2)
-  const [ironbeamText, setIronbeamText] = useState("");
-  const [isIngesting, setIsIngesting] = useState(false);
-  const [ingestStatus, setIngestStatus] = useState<{ success: boolean; message: string } | null>(null);
-  
-  const [analysisReport, setAnalysisReport] = useState<AnalysisReport | null>(null);
-  const [isSyncing, setIsSyncing] = useState(false);
-  const [syncStatus, setSyncStatus] = useState<{ success: boolean; message: string } | null>(null);
+  const fileInputRef = useRef<HTMLInputElement>(null);
+  const abortControllerRef = useRef<AbortController | null>(null);
 
   // Model Selection & Persistent Chats
   const [models, setModels] = useState<string[]>([]);
   const [selectedModel, setSelectedModel] = useState<string>("");
+  const [isLoadingModel, setIsLoadingModel] = useState(false);
+  const [isUnloadingModel, setIsUnloadingModel] = useState(false);
+
+  // Edit Message State
+  const [editingMessageId, setEditingMessageId] = useState<string | null>(null);
+  const [editMessageContent, setEditMessageContent] = useState("");
 
   useEffect(() => {
     chatBottomRef.current?.scrollIntoView({ behavior: "smooth" });
@@ -99,7 +73,7 @@ export default function AICoach({ accountId, onRefreshTrades }: AICoachProps) {
               role: "assistant",
               content: "Hello! I am your Antigravity Quantitative Trading Coach. I analyze your trade entries, scaling behavior, qualitative emotional tags, and current Hidden Markov Model market regimes. Ask me anything, or run one of the diagnostics below.",
             },
-            ...data.map((m: Message) => ({ role: m.role, content: m.content })),
+            ...data.map((m: any) => ({ role: m.role, content: m.content, image: m.image_data, message_id: m.message_id })),
           ]);
         } else {
           setMessages([
@@ -132,145 +106,231 @@ export default function AICoach({ accountId, onRefreshTrades }: AICoachProps) {
     }
   };
 
+  const handleLoadModel = async () => {
+    if (!selectedModel) return;
+    setIsLoadingModel(true);
+    try {
+      const res = await fetch("http://localhost:5000/api/ai/models/load", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ model: selectedModel })
+      });
+      if (res.ok) {
+        toast.celebrate(`Model loaded successfully!`, "Model Loaded");
+      } else {
+        toast.nudge("Failed to load model.", "Model Load Failed");
+      }
+    } catch (e) {
+      console.error(e);
+      toast.nudge("Failed to load model. Ensure backend is running.", "Error");
+    }
+    setIsLoadingModel(false);
+  };
+
+  const handleUnloadModel = async () => {
+    if (!selectedModel) return;
+    setIsUnloadingModel(true);
+    try {
+      const res = await fetch("http://localhost:5000/api/ai/models/unload", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ model: selectedModel })
+      });
+      if (res.ok) {
+        toast.info(`Model unloaded.`, "Model Unloaded");
+      } else {
+        toast.nudge("Failed to unload model.", "Error");
+      }
+    } catch (e) {
+      console.error(e);
+    }
+    setIsUnloadingModel(false);
+  };
+
   // Sends query to Express SSE Coach endpoint
-  const handleSendMessage = async (queryText: string, reportData: AnalysisReport | null = null) => {
-    if (!queryText.trim() || !accountId) return;
+  const handleSendMessage = async (queryText: string, imageToAttach?: string | null) => {
+    if (!queryText.trim() && !imageToAttach && !selectedImage) return;
+
+    const currentQuery = queryText;
+    const currentImage = imageToAttach !== undefined ? imageToAttach : selectedImage;
 
     // Append user message
-    const updatedMessages = [...messages, { role: "user" as const, content: queryText }];
+    const updatedMessages = [...messages, { role: "user" as const, content: currentQuery, image: currentImage || undefined }];
     setMessages(updatedMessages);
     setInputMessage("");
+    setSelectedImage(null);
     setIsTyping(true);
 
     // Placeholder for stream response
     setMessages((prev) => [...prev, { role: "assistant" as const, content: "" }]);
 
+    if (abortControllerRef.current) {
+      abortControllerRef.current.abort();
+    }
+    abortControllerRef.current = new AbortController();
+
     try {
-      let url = `http://localhost:5000/api/ai/coach?accountId=${accountId}&query=${encodeURIComponent(queryText)}`;
-      if (selectedModel) {
-        url += `&model=${encodeURIComponent(selectedModel)}`;
-      }
-      if (reportData) {
-        url += `&reconciliationReport=${encodeURIComponent(JSON.stringify(reportData))}`;
-      }
-      const eventSource = new EventSource(url);
+      const res = await fetch("http://localhost:5000/api/ai/coach", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        signal: abortControllerRef.current.signal,
+        body: JSON.stringify({
+          accountId,
+          query: currentQuery,
+          model: selectedModel,
+          image: currentImage,
+          systemPrompt: settings.coachSystemPrompt,
+          historyLimit: settings.coachHistoryLimit
+        }),
+      });
 
-      eventSource.onmessage = (event) => {
-        const data = JSON.parse(event.data);
-        
-        if (data.token) {
-          setMessages((prev) => {
-            if (prev.length === 0) return prev;
-            const list = [...prev];
-            const last = list[list.length - 1];
-            if (last && last.role === "assistant") {
-              list[list.length - 1] = {
-                ...last,
-                content: last.content + data.token,
-              };
+      if (!res.ok) throw new Error("Failed to connect to AI Coach.");
+      if (!res.body) throw new Error("No response body.");
+
+      const reader = res.body.getReader();
+      const decoder = new TextDecoder("utf-8");
+      let currentResponse = "";
+
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+
+        const chunk = decoder.decode(value, { stream: true });
+        const lines = chunk.split("\n");
+
+        for (const line of lines) {
+          if (line.startsWith("data: ")) {
+            const dataStr = line.replace("data: ", "").trim();
+            if (!dataStr) continue;
+            
+            try {
+              const data = JSON.parse(dataStr);
+              if (data.user_message_id) {
+                setMessages((prev) => {
+                  const list = [...prev];
+                  const lastUserIdx = list.findLastIndex(m => m.role === "user");
+                  if (lastUserIdx !== -1) {
+                    list[lastUserIdx] = { ...list[lastUserIdx], message_id: data.user_message_id };
+                  }
+                  return list;
+                });
+              }
+              if (data.token) {
+                currentResponse += data.token;
+                setMessages((prev) => {
+                  const list = [...prev];
+                  const last = list[list.length - 1];
+                  if (last && last.role === "assistant") {
+                    list[list.length - 1] = { ...last, content: last.content + data.token };
+                  }
+                  return list;
+                });
+              }
+              if (data.complete) {
+                setIsTyping(false);
+                if (data.message_id) {
+                  setMessages((prev) => {
+                    const list = [...prev];
+                    const last = list[list.length - 1];
+                    if (last && last.role === "assistant") {
+                      list[list.length - 1] = { ...last, message_id: data.message_id };
+                    }
+                    return list;
+                  });
+                }
+                if (currentResponse.includes("✅ **Trade successfully logged!**")) {
+                  if (currentResponse.includes("⚠️ Nudge: Rules were broken.")) {
+                    toast.nudge("Self-reporting mistakes takes courage. The AI logged your rule violation.", "Mistake Logged");
+                  } else {
+                    toast.celebrate("Elite discipline! The AI logged your trade successfully.", "Disciplined Trade Logged!");
+                  }
+                }
+              }
+            } catch (e) {
+              console.warn("Error parsing SSE line:", line, e);
             }
-            return list;
-          });
-        }
-
-        if (data.complete) {
-          eventSource.close();
-          setIsTyping(false);
-        }
-      };
-
-      eventSource.onerror = (err) => {
-        console.error("SSE Connection Error:", err);
-        setMessages((prev) => {
-          if (prev.length === 0) return prev;
-          const list = [...prev];
-          const last = list[list.length - 1];
-          if (last && last.role === "assistant" && !last.content) {
-            list[list.length - 1] = {
-              ...last,
-              content: "Error connecting to AI Coach endpoint. Please make sure LM Studio is running on http://localhost:1234/v1 or that you have configured an OpenAI API key.",
-            };
           }
-          return list;
-        });
-        eventSource.close();
-        setIsTyping(false);
-      };
-
-    } catch (e) {
+        }
+      }
+    } catch (e: any) {
+      if (e.name === "AbortError") {
+        console.log("Inference cancelled by user.");
+        return;
+      }
       console.error(e);
+      setMessages((prev) => {
+        const list = [...prev];
+        const last = list[list.length - 1];
+        if (last && last.role === "assistant" && !last.content) {
+          list[list.length - 1] = {
+            ...last,
+            content: "Error connecting to AI Coach endpoint. Please make sure LM Studio is running or that you have configured an OpenAI API key.",
+          };
+        }
+        return list;
+      });
       setIsTyping(false);
     }
   };
 
-  const handleAnalyzeStatement = async () => {
-    if (!ironbeamText.trim()) return alert("Please paste statement content first");
-    setIsIngesting(true);
-    setIngestStatus(null);
-    setSyncStatus(null);
-    setAnalysisReport(null);
+  const handleCancelInference = () => {
+    if (abortControllerRef.current) {
+      abortControllerRef.current.abort();
+      abortControllerRef.current = null;
+    }
+    setIsTyping(false);
+  };
 
-    try {
-      const res = await fetch("http://localhost:5000/api/ingest/ironbeam/analyze", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          rawText: ironbeamText,
-          account_id: accountId
-        })
-      });
-
-      const data = await res.json();
-      if (res.ok) {
-        setAnalysisReport(data);
-        setIngestStatus({ success: true, message: `Successfully analyzed ${data.summary.totalStatementExecutions} statement execution(s).` });
-      } else {
-        setIngestStatus({ success: false, message: data.error || "Analysis failed" });
-      }
-    } catch {
-      setIngestStatus({ success: false, message: "Server connection failed" });
-    } finally {
-      setIsIngesting(false);
+  const handleRetry = () => {
+    const lastUserMsg = [...messages].reverse().find(m => m.role === "user");
+    if (lastUserMsg) {
+      // Remove the failed assistant response
+      setMessages(prev => prev.slice(0, -1));
+      handleSendMessage(lastUserMsg.content, lastUserMsg.image);
     }
   };
 
-  const handleSyncStatement = async () => {
-    if (!analysisReport || !accountId) return;
-    setIsSyncing(true);
-    setSyncStatus(null);
-
+  const handleDeleteMessage = async (msgId: string) => {
+    if (!window.confirm("Delete this message?")) return;
     try {
-      const res = await fetch("http://localhost:5000/api/ingest/ironbeam/sync", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          account_id: accountId,
-          initial_risk: 100,
-          matched: analysisReport.matched,
-          ghosts: analysisReport.ghosts
-        })
-      });
-
-      const data = await res.json();
+      const res = await fetch(`http://localhost:5000/api/ai/chats/${msgId}`, { method: "DELETE" });
       if (res.ok) {
-        setSyncStatus({ success: true, message: data.message });
-        setAnalysisReport(null);
-        setIronbeamText("");
-        onRefreshTrades(); // Update dashboard values
-      } else {
-        setSyncStatus({ success: false, message: data.error || "Sync failed" });
+        setMessages(prev => prev.filter(m => m.message_id !== msgId));
+        toast.info("Message deleted.");
       }
-    } catch {
-      setSyncStatus({ success: false, message: "Server connection failed" });
-    } finally {
-      setIsSyncing(false);
+    } catch (e) {
+      console.error(e);
+      toast.nudge("Failed to delete message.");
     }
   };
 
-  const handleTriggerBehavioralAudit = () => {
-    if (!analysisReport) return;
-    const promptText = `Evaluate my trading performance, execution discipline, and discrepancies between my manual notes and this statement.`;
-    handleSendMessage(promptText, analysisReport);
+  const handleSaveEdit = async (msgId: string) => {
+    try {
+      const res = await fetch(`http://localhost:5000/api/ai/chats/${msgId}`, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ content: editMessageContent })
+      });
+      if (res.ok) {
+        setMessages(prev => prev.map(m => m.message_id === msgId ? { ...m, content: editMessageContent } : m));
+        setEditingMessageId(null);
+        toast.info("Message updated.");
+      }
+    } catch (e) {
+      console.error(e);
+      toast.nudge("Failed to update message.");
+    }
+  };
+
+  const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    if (e.target.files && e.target.files[0]) {
+      const file = e.target.files[0];
+      const reader = new FileReader();
+      reader.onloadend = () => {
+        setSelectedImage(reader.result as string);
+      };
+      reader.readAsDataURL(file);
+    }
   };
 
   const diagnosticSuggestions = [
@@ -281,7 +341,7 @@ export default function AICoach({ accountId, onRefreshTrades }: AICoachProps) {
   ];
 
   return (
-    <div style={{ display: "grid", gridTemplateColumns: "1.2fr 1fr", gap: "24px", height: "calc(100vh - 180px)" }}>
+    <div style={{ height: compact ? "400px" : "calc(100vh - 180px)", width: "100%", maxWidth: "1000px", margin: "0 auto" }}>
       
       {/* Left Column: Chat panel */}
       <div className="glass-panel" style={{ display: "flex", flexDirection: "column", height: "100%" }}>
@@ -304,6 +364,28 @@ export default function AICoach({ accountId, onRefreshTrades }: AICoachProps) {
                 </option>
               ))}
             </select>
+            {selectedModel && (
+              <>
+                <button
+                  className="btn-secondary"
+                  style={{ padding: "4px 8px", fontSize: "0.75rem", height: "30px", display: "flex", alignItems: "center", justifyContent: "center" }}
+                  onClick={handleLoadModel}
+                  disabled={isLoadingModel}
+                  title="Load Model"
+                >
+                  {isLoadingModel ? "..." : "Load"}
+                </button>
+                <button
+                  className="btn-secondary"
+                  style={{ padding: "4px 8px", fontSize: "0.75rem", height: "30px", display: "flex", alignItems: "center", justifyContent: "center" }}
+                  onClick={handleUnloadModel}
+                  disabled={isUnloadingModel}
+                  title="Unload Model"
+                >
+                  {isUnloadingModel ? "..." : "Unload"}
+                </button>
+              </>
+            )}
             <button
               className="btn-secondary"
               style={{ padding: "4px 8px", fontSize: "0.75rem", height: "30px", display: "flex", alignItems: "center", justifyContent: "center" }}
@@ -318,20 +400,74 @@ export default function AICoach({ accountId, onRefreshTrades }: AICoachProps) {
         <div style={{ flex: 1, overflowY: "auto", display: "flex", flexDirection: "column", gap: "12px", paddingRight: "8px", marginBottom: "16px" }}>
           {messages.map((m, index) => (
             <div
-              key={index}
+              key={m.message_id || index}
+              className="chat-bubble-container"
               style={{
                 alignSelf: m.role === "user" ? "flex-end" : "flex-start",
                 maxWidth: "80%",
-                background: m.role === "user" ? "var(--msg-user-bg)" : "var(--msg-assistant-bg)",
-                border: `1px solid ${m.role === "user" ? "var(--accent-blue)" : "var(--border-color)"}`,
-                borderRadius: "12px",
-                padding: "10px 14px",
-                fontSize: "0.9rem",
-                color: "var(--text-primary)",
-                whiteSpace: "pre-line"
+                display: "flex",
+                flexDirection: "column",
+                position: "relative"
               }}
             >
-              {m.content}
+              <div
+                style={{
+                  background: m.role === "user" ? "var(--msg-user-bg)" : "var(--msg-assistant-bg)",
+                  border: `1px solid ${m.role === "user" ? "var(--accent-blue)" : "var(--border-color)"}`,
+                  borderRadius: "12px",
+                  padding: "10px 14px",
+                  fontSize: "0.9rem",
+                  color: "var(--text-primary)",
+                  whiteSpace: "pre-line",
+                  display: "flex",
+                  flexDirection: "column",
+                  gap: "8px"
+                }}
+              >
+                {m.image && (
+                  <a href={m.image} target="_blank" rel="noopener noreferrer">
+                    <img src={m.image} alt="User Attachment" style={{ maxWidth: "100%", maxHeight: "200px", borderRadius: "6px", cursor: "pointer", border: "1px solid var(--border-color)" }} />
+                  </a>
+                )}
+                {editingMessageId === m.message_id ? (
+                  <div style={{ display: "flex", flexDirection: "column", gap: "8px", minWidth: "250px" }}>
+                    <textarea 
+                      className="input-field" 
+                      value={editMessageContent}
+                      onChange={(e) => setEditMessageContent(e.target.value)}
+                      style={{ minHeight: "80px", resize: "vertical" }}
+                    />
+                    <div style={{ display: "flex", gap: "8px", justifyContent: "flex-end" }}>
+                      <button className="btn-secondary" style={{ padding: "4px 8px" }} onClick={() => setEditingMessageId(null)}>
+                        Cancel
+                      </button>
+                      <button className="btn-primary" style={{ padding: "4px 8px", display: "flex", alignItems: "center", gap: "4px" }} onClick={() => handleSaveEdit(m.message_id!)}>
+                        <Check size={14} /> Save
+                      </button>
+                    </div>
+                  </div>
+                ) : (
+                  <div>{m.content}</div>
+                )}
+              </div>
+              
+              {/* Action Buttons */}
+              {m.message_id && editingMessageId !== m.message_id && (
+                <div style={{
+                  display: "flex", gap: "6px", marginTop: "4px", 
+                  justifyContent: m.role === "user" ? "flex-end" : "flex-start",
+                  opacity: 0.6
+                }}>
+                  <button type="button" style={{ background: "transparent", border: "none", cursor: "pointer", color: "var(--text-secondary)" }} 
+                    onClick={() => { setEditingMessageId(m.message_id!); setEditMessageContent(m.content); }}>
+                    <Pencil size={12} />
+                  </button>
+                  <button type="button" style={{ background: "transparent", border: "none", cursor: "pointer", color: "var(--text-secondary)" }} 
+                    onClick={() => handleDeleteMessage(m.message_id!)}>
+                    <Trash2 size={12} />
+                  </button>
+                </div>
+              )}
             </div>
           ))}
           {isTyping && (
@@ -357,266 +493,81 @@ export default function AICoach({ accountId, onRefreshTrades }: AICoachProps) {
                 {s.label}
               </button>
             ))}
+            <button
+              className="btn-secondary"
+              style={{ padding: "4px 8px", fontSize: "0.75rem", borderRadius: "16px", borderColor: "var(--accent-blue)", color: "var(--accent-blue)" }}
+              onClick={() => handleSendMessage("Generate a summary of today's trades and overall performance.")}
+              disabled={isTyping}
+            >
+              Generate Daily Summary
+            </button>
           </div>
         </div>
 
         {/* Input area */}
-        <form
-          onSubmit={(e) => {
-            e.preventDefault();
-            handleSendMessage(inputMessage);
-          }}
-          style={{ display: "flex", gap: "10px" }}
-        >
-          <input
-            type="text"
-            className="input-field"
-            placeholder="Query your trading performance patterns..."
-            value={inputMessage}
-            onChange={(e) => setInputMessage(e.target.value)}
-            disabled={isTyping}
-          />
-          <button type="submit" className="btn-primary" style={{ padding: "10px 16px" }} disabled={isTyping}>
-            <Send size={16} />
-          </button>
-        </form>
-      </div>
-
-      {/* Right Column: Statement Ingestion & Reconciliation */}
-      <div className="glass-panel" style={{ display: "flex", flexDirection: "column", height: "100%" }}>
-        <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", borderBottom: "1px solid var(--border-color)", paddingBottom: "12px", marginBottom: "12px" }}>
-          <div style={{ display: "flex", alignItems: "center", gap: "10px" }}>
-            <Upload style={{ color: "var(--accent-gold)" }} />
-            <h3 style={{ fontSize: "1.1rem" }}>Ironbeam Reconciliation</h3>
-          </div>
-          {analysisReport && (
-            <button
-              onClick={() => {
-                setAnalysisReport(null);
-                setIngestStatus(null);
-                setSyncStatus(null);
-              }}
-              style={{
-                background: "transparent",
-                border: "none",
-                color: "var(--text-secondary)",
-                cursor: "pointer",
-                display: "flex",
-                alignItems: "center",
-                gap: "4px",
-                fontSize: "0.8rem",
-              }}
-            >
-              <RotateCcw size={12} />
-              Reset
-            </button>
+        <div style={{ position: "relative" }}>
+          {selectedImage && (
+            <div style={{ position: "absolute", bottom: "100%", left: 0, marginBottom: "8px", background: "var(--bg-secondary)", padding: "4px", borderRadius: "8px", border: "1px solid var(--border-color)", display: "flex", alignItems: "center" }}>
+              <img src={selectedImage} alt="Preview" style={{ height: "40px", borderRadius: "4px" }} />
+              <button
+                type="button"
+                onClick={() => setSelectedImage(null)}
+                style={{ background: "transparent", border: "none", cursor: "pointer", color: "var(--text-secondary)", marginLeft: "8px" }}
+              >
+                <X size={16} />
+              </button>
+            </div>
           )}
-        </div>
-
-        {!analysisReport ? (
-          <>
-            <p style={{ fontSize: "0.85rem", color: "var(--text-secondary)", marginBottom: "16px" }}>
-              Copy and paste the raw text fills list from your Ironbeam daily statement. The AI router will parse and reconcile it side-by-side with your manual logs to track executions, slippage, and ghost trades.
-            </p>
-
-            {/* Paste Area */}
-            <div style={{ flex: 1, display: "flex", flexDirection: "column", marginBottom: "16px" }}>
-              <textarea
-                placeholder="Paste your daily fills list here...&#13;Example:&#13;BUY 2 ES M6 5120.00 05/22 10:24:12&#13;SELL 2 ES M6 5135.25 05/22 10:55:00"
-                className="input-field"
-                style={{ flex: 1, resize: "none", fontSize: "0.85rem", fontFamily: "monospace" }}
-                value={ironbeamText}
-                onChange={(e) => setIronbeamText(e.target.value)}
-              />
-            </div>
-
-            {/* Error Status Report if parsing fails */}
-            {ingestStatus && !ingestStatus.success && (
-              <div
-                className="glass-panel"
-                style={{
-                  padding: "10px 14px",
-                  marginBottom: "16px",
-                  backgroundColor: "var(--red-bg)",
-                  borderColor: "var(--red-border)",
-                  borderWidth: "1px",
-                  borderStyle: "solid"
-                }}
-              >
-                <span style={{ fontSize: "0.85rem", color: "var(--accent-red)", fontWeight: "bold", display: "block" }}>
-                  Analysis Failed
-                </span>
-                <p style={{ fontSize: "0.8rem", color: "var(--text-primary)", marginTop: "4px" }}>
-                  {ingestStatus.message}
-                </p>
-              </div>
-            )}
-
-            {syncStatus && (
-              <div
-                className="glass-panel"
-                style={{
-                  padding: "10px 14px",
-                  marginBottom: "16px",
-                  backgroundColor: syncStatus.success ? "var(--green-bg)" : "var(--red-bg)",
-                  borderColor: syncStatus.success ? "var(--green-border)" : "var(--red-border)",
-                  borderWidth: "1px",
-                  borderStyle: "solid"
-                }}
-              >
-                <span style={{ fontSize: "0.85rem", color: syncStatus.success ? "var(--accent-green)" : "var(--accent-red)", fontWeight: "bold", display: "block" }}>
-                  {syncStatus.success ? "Reconciliation Synced" : "Sync Failed"}
-                </span>
-                <p style={{ fontSize: "0.8rem", color: "var(--text-primary)", marginTop: "4px" }}>
-                  {syncStatus.message}
-                </p>
-              </div>
-            )}
-
+          <form
+            onSubmit={(e) => {
+              e.preventDefault();
+              handleSendMessage(inputMessage);
+            }}
+            style={{ display: "flex", gap: "10px", alignItems: "flex-end" }}
+          >
+            <input type="file" accept="image/*" ref={fileInputRef} style={{ display: "none" }} onChange={handleFileChange} />
             <button
-              className="btn-primary"
-              style={{ width: "100%", display: "flex", alignItems: "center", justifyContent: "center", gap: "8px" }}
-              onClick={handleAnalyzeStatement}
-              disabled={isIngesting || !ironbeamText.trim()}
+              type="button"
+              className="btn-secondary"
+              style={{ padding: "10px", height: "44px", display: "flex", alignItems: "center", justifyContent: "center" }}
+              onClick={() => fileInputRef.current?.click()}
+              disabled={isTyping}
+              title="Attach Image"
             >
-              <FileText size={18} />
-              {isIngesting ? "Parsing Fills..." : "Analyze Statement"}
+              <Paperclip size={18} />
             </button>
-          </>
-        ) : (
-          <>
-            {/* Summary statistics boxes */}
-            <div style={{ display: "grid", gridTemplateColumns: "repeat(3, 1fr)", gap: "10px", marginBottom: "16px" }}>
-              <div style={{ padding: "10px", background: "rgba(13, 22, 36, 0.4)", borderRadius: "8px", border: "1px solid var(--border-color)", textAlign: "center" }}>
-                <div style={{ fontSize: "1.2rem", fontWeight: "bold", color: "var(--accent-green)" }}>{analysisReport.summary.matchedCount}</div>
-                <div style={{ fontSize: "0.7rem", color: "var(--text-secondary)" }}>Matched</div>
-              </div>
-              <div style={{ padding: "10px", background: "rgba(13, 22, 36, 0.4)", borderRadius: "8px", border: "1px solid var(--border-color)", textAlign: "center" }}>
-                <div style={{ fontSize: "1.2rem", fontWeight: "bold", color: "var(--accent-gold)" }}>{analysisReport.summary.ghostCount}</div>
-                <div style={{ fontSize: "0.7rem", color: "var(--text-secondary)" }}>Ghosts</div>
-              </div>
-              <div style={{ padding: "10px", background: "rgba(13, 22, 36, 0.4)", borderRadius: "8px", border: "1px solid var(--border-color)", textAlign: "center" }}>
-                <div style={{ fontSize: "1.2rem", fontWeight: "bold", color: "var(--accent-red)" }}>{analysisReport.summary.orphanCount}</div>
-                <div style={{ fontSize: "0.7rem", color: "var(--text-secondary)" }}>Orphans</div>
-              </div>
-            </div>
-
-            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: "10px 14px", background: "var(--accent-bg)", border: "1px solid var(--border-hover)", borderRadius: "8px", marginBottom: "16px" }}>
-              <span style={{ fontSize: "0.85rem", color: "var(--text-primary)" }}>Net Execution Slippage:</span>
-              <span style={{ fontSize: "1rem", fontWeight: "bold", color: analysisReport.summary.totalSlippage >= 0 ? "var(--accent-green)" : "var(--accent-red)" }}>
-                {analysisReport.summary.totalSlippage > 0 ? "+" : ""}{analysisReport.summary.totalSlippage.toFixed(2)} pts
-              </span>
-            </div>
-
-            {/* Reconciliation Report list table */}
-            <div style={{ flex: 1, overflowY: "auto", marginBottom: "16px", border: "1px solid var(--border-color)", borderRadius: "8px", background: "rgba(13, 22, 36, 0.2)" }}>
-              <table style={{ width: "100%", borderCollapse: "collapse", fontSize: "0.85rem" }}>
-                <thead>
-                  <tr style={{ borderBottom: "1px solid var(--border-color)", background: "rgba(13, 22, 36, 0.6)" }}>
-                    <th style={{ padding: "10px", textAlign: "left", color: "var(--text-secondary)" }}>Type</th>
-                    <th style={{ padding: "10px", textAlign: "left", color: "var(--text-secondary)" }}>Trade</th>
-                    <th style={{ padding: "10px", textAlign: "right", color: "var(--text-secondary)" }}>Prices</th>
-                    <th style={{ padding: "10px", textAlign: "right", color: "var(--text-secondary)" }}>Slippage</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {/* Matched */}
-                  {analysisReport.matched.map((m, idx) => (
-                    <tr key={`matched-${idx}`} style={{ borderBottom: "1px solid var(--border-color)" }}>
-                      <td style={{ padding: "10px" }}>
-                        <span style={{ display: "inline-block", padding: "2px 6px", borderRadius: "4px", fontSize: "0.7rem", fontWeight: "bold", background: "var(--green-bg-strong)", color: "var(--accent-green)", border: "1px solid var(--green-border)" }}>
-                          Matched
-                        </span>
-                      </td>
-                      <td style={{ padding: "10px" }}>
-                        <div style={{ fontWeight: "600", color: "var(--text-primary)" }}>{m.manual.symbol}</div>
-                        <div style={{ fontSize: "0.75rem", color: "var(--text-secondary)" }}>{m.manual.side} • {m.statement.quantity} lot</div>
-                      </td>
-                      <td style={{ padding: "10px", textAlign: "right" }}>
-                        <div>Stmt: {m.statement.fillPrice.toFixed(2)}</div>
-                        <div style={{ fontSize: "0.75rem", color: "var(--text-secondary)" }}>Manual: {m.manual.fill_price.toFixed(2)}</div>
-                      </td>
-                      <td style={{ padding: "10px", textAlign: "right", color: m.slippage >= 0 ? "var(--accent-green)" : "var(--accent-red)", fontWeight: "600" }}>
-                        {m.slippage > 0 ? "+" : ""}{m.slippage.toFixed(2)}
-                      </td>
-                    </tr>
-                  ))}
-
-                  {/* Ghosts */}
-                  {analysisReport.ghosts.map((g, idx) => (
-                    <tr key={`ghost-${idx}`} style={{ borderBottom: "1px solid var(--border-color)" }}>
-                      <td style={{ padding: "10px" }}>
-                        <span style={{ display: "inline-block", padding: "2px 6px", borderRadius: "4px", fontSize: "0.7rem", fontWeight: "bold", background: "var(--gold-bg)", color: "var(--accent-gold)", border: "1px solid rgba(255, 183, 0, 0.2)" }}>
-                          Ghost
-                        </span>
-                      </td>
-                      <td style={{ padding: "10px" }}>
-                        <div style={{ fontWeight: "600", color: "var(--text-primary)" }}>{g.symbol}</div>
-                        <div style={{ fontSize: "0.75rem", color: "var(--text-secondary)" }}>{g.side} • {g.quantity} lot</div>
-                      </td>
-                      <td style={{ padding: "10px", textAlign: "right" }}>
-                        <div>Stmt: {g.fillPrice.toFixed(2)}</div>
-                        <div style={{ fontSize: "0.75rem", color: "var(--text-secondary)" }}>Unjournaled</div>
-                      </td>
-                      <td style={{ padding: "10px", textAlign: "right", color: "var(--text-secondary)" }}>
-                        —
-                      </td>
-                    </tr>
-                  ))}
-
-                  {/* Orphans */}
-                  {analysisReport.orphans.map((o, idx) => (
-                    <tr key={`orphan-${idx}`} style={{ borderBottom: "1px solid var(--border-color)" }}>
-                      <td style={{ padding: "10px" }}>
-                        <span style={{ display: "inline-block", padding: "2px 6px", borderRadius: "4px", fontSize: "0.7rem", fontWeight: "bold", background: "var(--red-bg-strong)", color: "var(--accent-red)", border: "1px solid var(--red-border)" }}>
-                          Orphan
-                        </span>
-                      </td>
-                      <td style={{ padding: "10px" }}>
-                        <div style={{ fontWeight: "600", color: "var(--text-primary)" }}>{o.symbol}</div>
-                        <div style={{ fontSize: "0.75rem", color: "var(--text-secondary)" }}>{o.side} • {o.quantity} lot</div>
-                      </td>
-                      <td style={{ padding: "10px", textAlign: "right" }}>
-                        <div>Manual: {o.fill_price.toFixed(2)}</div>
-                        <div style={{ fontSize: "0.75rem", color: "var(--text-secondary)" }}>Missing fill</div>
-                      </td>
-                      <td style={{ padding: "10px", textAlign: "right", color: "var(--text-secondary)" }}>
-                        —
-                      </td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
-
-            {/* Action buttons */}
-            <div style={{ display: "flex", flexDirection: "column", gap: "10px" }}>
-              <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "10px" }}>
-                <button
-                  className="btn-secondary"
-                  style={{ display: "flex", alignItems: "center", justifyContent: "center", gap: "6px", fontSize: "0.85rem", padding: "10px" }}
-                  onClick={handleSyncStatement}
-                  disabled={isSyncing}
-                >
-                  <CheckCircle size={16} />
-                  {isSyncing ? "Syncing..." : "Sync & Enrich"}
-                </button>
-
-                <button
-                  className="btn-primary"
-                  style={{ display: "flex", alignItems: "center", justifyContent: "center", gap: "6px", fontSize: "0.85rem", padding: "10px" }}
-                  onClick={handleTriggerBehavioralAudit}
-                  disabled={isTyping}
-                >
-                  <Sparkles size={16} />
-                  AI Behavior Audit
-                </button>
-              </div>
-            </div>
-          </>
-        )}
+            <textarea
+              className="input-field"
+              placeholder="Query your trading performance patterns... (Shift+Enter for new line)"
+              value={inputMessage}
+              onChange={(e) => setInputMessage(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === "Enter" && !e.shiftKey) {
+                  e.preventDefault();
+                  handleSendMessage(inputMessage);
+                }
+              }}
+              disabled={isTyping}
+              style={{ resize: "none", minHeight: "44px", maxHeight: "150px", overflowY: "auto", flex: 1, paddingTop: "12px", boxSizing: "border-box" }}
+              rows={1}
+            />
+            {!isTyping && messages.length > 1 && (
+              <button type="button" className="btn-secondary" style={{ padding: "10px 16px", height: "44px" }} onClick={handleRetry} title="Retry Last Message">
+                <RotateCcw size={16} />
+              </button>
+            )}
+            {isTyping ? (
+              <button type="button" className="btn-secondary" style={{ padding: "10px 16px", height: "44px", color: "var(--color-error)", borderColor: "var(--color-error)" }} onClick={handleCancelInference} title="Stop Generating">
+                <X size={16} />
+              </button>
+            ) : (
+              <button type="submit" className="btn-primary" style={{ padding: "10px 16px", height: "44px" }} disabled={!inputMessage.trim() && !selectedImage}>
+                <Send size={16} />
+              </button>
+            )}
+          </form>
+        </div>
       </div>
-
     </div>
   );
 }

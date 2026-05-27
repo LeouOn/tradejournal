@@ -1,6 +1,6 @@
 import React, { useState, useEffect } from "react";
 import { useSettings, type ThemeId } from "../contexts/SettingsContext";
-import { Palette, Monitor, Zap, PanelLeft, RotateCcw, Wallet } from "lucide-react";
+import { Palette, Monitor, Zap, PanelLeft, RotateCcw, Wallet, Brain } from "lucide-react";
 import { useToast } from "../contexts/ToastContext";
 
 const themes: { id: ThemeId; name: string; desc: string; preview: { bg: string; accent: string; text: string } }[] = [
@@ -222,6 +222,40 @@ export default function Settings({ accountId, onAccountUpdated }: SettingsProps)
               {speed === "normal" ? "Normal" : speed === "fast" ? "Fast" : "Disabled"}
             </button>
           ))}
+        </div>
+      </section>
+
+      <section style={{ marginBottom: "32px" }}>
+        <div style={{ display: "flex", alignItems: "center", gap: "8px", marginBottom: "16px" }}>
+          <Brain size={18} style={{ color: "var(--accent-blue)" }} />
+          <h3 style={{ fontSize: "1rem" }}>AI Coach Preferences</h3>
+        </div>
+        <div className="glass-panel" style={{ display: "flex", flexDirection: "column", gap: "16px" }}>
+          <div>
+            <label className="label-text">History Context Limit</label>
+            <input
+              type="number"
+              className="input-field"
+              value={settings.coachHistoryLimit}
+              onChange={(e) => updateSettings({ coachHistoryLimit: parseInt(e.target.value) || 20 })}
+              placeholder="e.g. 20"
+              min="1"
+              max="100"
+            />
+            <div style={{ fontSize: "0.75rem", color: "var(--text-secondary)", marginTop: "4px" }}>
+              How many previous messages the coach remembers (default: 20).
+            </div>
+          </div>
+          <div>
+            <label className="label-text">Custom System Prompt</label>
+            <textarea
+              className="input-field"
+              value={settings.coachSystemPrompt}
+              onChange={(e) => updateSettings({ coachSystemPrompt: e.target.value })}
+              placeholder="Override the default coach persona (leave blank to use the default Antigravity Quantitative Coach)."
+              style={{ minHeight: "80px", resize: "vertical" }}
+            />
+          </div>
         </div>
       </section>
 

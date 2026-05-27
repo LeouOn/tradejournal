@@ -10,7 +10,7 @@ import { getSymbolMultiplier, validatePriceProximity } from "./utils/multipliers
 import fs from "fs";
 import path from "path";
 import externalApiRouter, { setRegimeUpdater } from "./routes/externalApi";
-import { spawn } from "child_process";
+import { spawn, exec } from "child_process";
 import cron from "node-cron";
 import { OpenAI } from "openai";
 
@@ -171,8 +171,7 @@ app.get("/api/trades", async (req, res) => {
   }
 });
 
-// Helper: Recalculate average fill prices, net realized P&L, status, and duration
-async function updateTradeCalculations(tradeId: string, initialRisk = 100) {
+export async function updateTradeCalculations(tradeId: string, initialRisk = 100) {
   const trade = await prisma.trade.findUnique({
     where: { trade_id: tradeId },
     include: { executions: true },
@@ -347,7 +346,7 @@ app.post("/api/trades", async (req, res) => {
 // Update trade fields (e.g. status, notes, tags, rules_followed, initial risk)
 app.patch("/api/trades/:tradeId", async (req, res) => {
   const { tradeId } = req.params;
-  const { status, manual_status, notes, rules_followed, tags, initial_risk, bias, bias_reversal, trade_type, stop_loss } = req.body;
+  const { symbol, status, manual_status, notes, rules_followed, tags, initial_risk, bias, bias_reversal, trade_type, stop_loss } = req.body;
   try {
     const existingTrade = await prisma.trade.findUnique({
       where: { trade_id: tradeId },
@@ -393,6 +392,7 @@ app.patch("/api/trades/:tradeId", async (req, res) => {
     const updatedTrade = await prisma.trade.update({
       where: { trade_id: tradeId },
       data: {
+        symbol: symbol !== undefined ? symbol : existingTrade.symbol,
         status: status !== undefined ? status : existingTrade.status,
         manual_status: manual_status !== undefined ? manual_status : existingTrade.manual_status,
         notes: notes !== undefined ? notes : existingTrade.notes,
@@ -797,11 +797,40 @@ app.get("/api/market/regime", (req, res) => {
 
 /**
  * ----------------------------------------------------
+ * MODEL LOAD/UNLOAD ENDPOINTS
+ * ----------------------------------------------------
+ */
+app.post("/api/ai/models/load", (req, res) => {
+  const { model } = req.body;
+  if (!model) return res.status(400).json({ error: "Model parameter is required" });
+  exec(`lms load "${model}"`, (error, stdout, stderr) => {
+    if (error) {
+      console.error(`lms load error: ${error.message}`);
+      return res.status(500).json({ error: error.message });
+    }
+    res.json({ status: "success", output: stdout });
+  });
+});
+
+app.post("/api/ai/models/unload", (req, res) => {
+  const { model } = req.body;
+  if (!model) return res.status(400).json({ error: "Model parameter is required" });
+  exec(`lms unload "${model}"`, (error, stdout, stderr) => {
+    if (error) {
+      console.error(`lms unload error: ${error.message}`);
+      return res.status(500).json({ error: error.message });
+    }
+    res.json({ status: "success", output: stdout });
+  });
+});
+
+/**
+ * ----------------------------------------------------
  * AI COACH (SSE Chat Streaming Endpoint)
  * ----------------------------------------------------
  */
-app.get("/api/ai/coach", async (req, res) => {
-  const { accountId, query, reconciliationReport, model } = req.query;
+app.post("/api/ai/coach", async (req, res) => {
+  const { accountId, query, reconciliationReport, model, image, systemPrompt, historyLimit } = req.body;
 
   if (!accountId || !query) {
     return res.status(400).json({ error: "accountId and query parameters are required" });
@@ -818,17 +847,22 @@ app.get("/api/ai/coach", async (req, res) => {
   }, 15000);
 
   // Save the user message to ChatMessage table
+  let userMsgId = "";
   try {
-    await prisma.chatMessage.create({
+    const userMsg = await prisma.chatMessage.create({
       data: {
         role: "user",
         content: String(query),
         account_id: String(accountId),
+        image_data: image ? String(image) : null,
       },
     });
+    userMsgId = userMsg.message_id;
   } catch (e) {
     console.error("Failed to save user chat log:", e);
   }
+
+  res.write(`data: ${JSON.stringify({ user_message_id: userMsgId })}\n\n`);
 
   try {
     await streamAICoach(
@@ -836,25 +870,30 @@ app.get("/api/ai/coach", async (req, res) => {
       String(query),
       reconciliationReport ? String(reconciliationReport) : null,
       model ? String(model) : null,
+      image ? String(image) : null,
+      systemPrompt ? String(systemPrompt) : null,
+      historyLimit ? Number(historyLimit) : 20,
       (token) => {
         // Send SSE message block
         res.write(`data: ${JSON.stringify({ token })}\n\n`);
       },
       async (fullText) => {
         // Save the assistant message to ChatMessage table on completion
+        let assistantMsgId = "";
         try {
-          await prisma.chatMessage.create({
+          const asstMsg = await prisma.chatMessage.create({
             data: {
               role: "assistant",
               content: fullText,
               account_id: String(accountId),
             },
           });
+          assistantMsgId = asstMsg.message_id;
         } catch (e) {
           console.error("Failed to save assistant chat log:", e);
         }
 
-        res.write(`data: ${JSON.stringify({ complete: true, fullText })}\n\n`);
+        res.write(`data: ${JSON.stringify({ complete: true, fullText, message_id: assistantMsgId })}\n\n`);
         clearInterval(keepAlive);
         res.end();
       }
@@ -910,6 +949,34 @@ app.delete("/api/ai/chats", async (req, res) => {
     res.json({ success: true, message: "Chat history cleared successfully" });
   } catch (error: any) {
     console.error("Failed to clear chat logs:", error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// Endpoint to edit a specific chat message
+app.put("/api/ai/chats/:messageId", async (req, res) => {
+  const { messageId } = req.params;
+  const { content } = req.body;
+  try {
+    const updated = await prisma.chatMessage.update({
+      where: { message_id: messageId },
+      data: { content },
+    });
+    res.json(updated);
+  } catch (error: any) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// Endpoint to delete a specific chat message
+app.delete("/api/ai/chats/:messageId", async (req, res) => {
+  const { messageId } = req.params;
+  try {
+    await prisma.chatMessage.delete({
+      where: { message_id: messageId },
+    });
+    res.json({ success: true });
+  } catch (error: any) {
     res.status(500).json({ error: error.message });
   }
 });

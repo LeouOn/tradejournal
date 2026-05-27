@@ -8,6 +8,8 @@ export interface AppSettings {
   compactSidebar: boolean;
   showGlowEffects: boolean;
   animationSpeed: "normal" | "fast" | "none";
+  coachSystemPrompt: string;
+  coachHistoryLimit: number;
 }
 
 const STORAGE_KEY = "antigravity-settings";
@@ -17,6 +19,8 @@ const defaults: AppSettings = {
   compactSidebar: false,
   showGlowEffects: true,
   animationSpeed: "normal",
+  coachSystemPrompt: "",
+  coachHistoryLimit: 20,
 };
 
 function loadSettings(): AppSettings {

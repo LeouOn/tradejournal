@@ -3,6 +3,7 @@ import {
   Award, Flame, EyeOff, Eye, Plus, Trash2, Play, MessageSquare
 } from "lucide-react";
 import { useToast } from "../contexts/ToastContext";
+import AICoach from "./AICoach";
 
 interface Tag {
   tag_id: string;
@@ -105,7 +106,8 @@ export default function Dashboard({
   const [privacyMode, setPrivacyMode] = useState(false);
 
   // Manual Logger Form State
-  const [isLoggingOpen, setIsLoggingOpen] = useState(true); // Open by default
+  const [isLoggingOpen, setIsLoggingOpen] = useState(false);
+  const [isAILoggingOpen, setIsAILoggingOpen] = useState(true);
   const [entryMode, setEntryMode] = useState<"quick" | "advanced">("quick");
   const [symbol, setSymbol] = useState("");
   const [initialRisk, setInitialRisk] = useState("100");
@@ -661,14 +663,23 @@ export default function Dashboard({
     if (clean.startsWith("RTY")) return 50;
     if (clean.startsWith("MYM")) return 0.5;
     if (clean.startsWith("YM")) return 5;
+    if (clean.startsWith("MCL")) return 100;
+    if (clean.startsWith("CL")) return 1000;
+    if (clean.startsWith("MGC")) return 10;
+    if (clean.startsWith("GC")) return 100;
+    if (clean.startsWith("NG")) return 10000;
     return 1; // default multiplier
   };
 
   const getSymbolTickValue = (sym: string): number => {
     const clean = sym.toUpperCase().trim();
     const multiplier = getSymbolMultiplier(clean);
-    const tickSize = clean.startsWith("YM") || clean.startsWith("MYM") ? 1.0 :
-                     clean.startsWith("RTY") || clean.startsWith("M2K") ? 0.1 : 0.25;
+    let tickSize = 0.25;
+    if (clean.startsWith("YM") || clean.startsWith("MYM")) tickSize = 1.0;
+    else if (clean.startsWith("RTY") || clean.startsWith("M2K")) tickSize = 0.1;
+    else if (clean.startsWith("CL") || clean.startsWith("MCL")) tickSize = 0.01;
+    else if (clean.startsWith("GC") || clean.startsWith("MGC")) tickSize = 0.1;
+    else if (clean.startsWith("NG")) tickSize = 0.001;
     return multiplier * tickSize;
   };
 
@@ -790,11 +801,19 @@ export default function Dashboard({
           </button>
           <button 
             className="btn-primary" 
-            style={{ display: "flex", alignItems: "center", gap: "6px" }}
-            onClick={() => setIsLoggingOpen(!isLoggingOpen)}
+            style={{ display: "flex", alignItems: "center", gap: "6px", backgroundColor: isAILoggingOpen ? "var(--accent-blue)" : "var(--bg-secondary)", color: isAILoggingOpen ? "#fff" : "var(--text-primary)" }}
+            onClick={() => { setIsAILoggingOpen(!isAILoggingOpen); setIsLoggingOpen(false); }}
+          >
+            <MessageSquare size={18} />
+            Log via AI
+          </button>
+          <button 
+            className="btn-primary" 
+            style={{ display: "flex", alignItems: "center", gap: "6px", backgroundColor: isLoggingOpen ? "var(--accent-blue)" : "var(--bg-secondary)", color: isLoggingOpen ? "#fff" : "var(--text-primary)" }}
+            onClick={() => { setIsLoggingOpen(!isLoggingOpen); setIsAILoggingOpen(false); }}
           >
             <Plus size={18} />
-            Log Manual Trade
+            Manual Entry
           </button>
         </div>
       </div>
@@ -835,6 +854,13 @@ export default function Dashboard({
           </>
         );
       })()}
+
+      {/* AI Logger Panel */}
+      {isAILoggingOpen && (
+        <div style={{ marginBottom: "24px", border: "1px solid var(--border-color)", borderRadius: "12px", overflow: "hidden" }}>
+          <AICoach accountId={accountId} onRefreshTrades={onRefresh} compact={true} />
+        </div>
+      )}
 
       {/* Manual Logger Sliding/Toggled Panel */}
       {isLoggingOpen && (

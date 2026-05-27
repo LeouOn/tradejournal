@@ -204,7 +204,7 @@ def main():
     
     # State 1 (2nd lowest VIX): Healthy Chop / Reversal
     if state_means[1]["mean_return"] >= 0:
-        state_names[state_means[1]["state_idx"]] = "Bullish - High Volatility"
+        state_names[state_means[1]["state_idx"]] = "Bullish - Medium Volatility"
     else:
         state_names[state_means[1]["state_idx"]] = "Bearish - Low Volatility"
 
@@ -212,7 +212,7 @@ def main():
     if state_means[2]["mean_return"] >= 0:
         state_names[state_means[2]["state_idx"]] = "Bullish - High Volatility"
     else:
-        state_names[state_means[2]["state_idx"]] = "Bearish - Low Volatility"
+        state_names[state_means[2]["state_idx"]] = "Bearish - Medium Volatility"
 
     # State 3 (highest VIX): High Volatility Catastrophe / Revenge regimes
     state_names[state_means[3]["state_idx"]] = "Bearish - High Volatility"

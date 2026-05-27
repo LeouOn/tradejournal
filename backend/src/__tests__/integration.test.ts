@@ -306,6 +306,59 @@ describe("Integration Tests - Trading Journal Schema & Logic", () => {
     await prisma.trade.delete({ where: { trade_id: originalTrade.trade_id } });
   });
 
+  test("Should recalculate P&L correctly when symbol is changed from CL to MCL", async () => {
+    // Create CL trade
+    const trade = await prisma.trade.create({
+      data: {
+        symbol: "CL",
+        status: "OPEN",
+        bias: "LONG",
+        account_id: accountId,
+      },
+    });
+
+    // Add entry: Buy 1 CL at 70.00
+    await prisma.execution.create({
+      data: {
+        trade_id: trade.trade_id,
+        side: "BUY",
+        quantity: 1,
+        fill_price: 70.00,
+        execution_timestamp: new Date("2026-05-22T10:00:00Z"),
+      },
+    });
+
+    // Add exit: Sell 1 CL at 71.00
+    await prisma.execution.create({
+      data: {
+        trade_id: trade.trade_id,
+        side: "SELL",
+        quantity: 1,
+        fill_price: 71.00,
+        execution_timestamp: new Date("2026-05-22T10:10:00Z"),
+      },
+    });
+
+    // Calculate (using CL multiplier = 1000)
+    await updateTradeCalculations(trade.trade_id);
+    let updated = await prisma.trade.findUnique({ where: { trade_id: trade.trade_id } });
+    expect(updated?.net_pnl.toNumber()).toBe(1000); // (71 - 70) * 1 * 1000
+
+    // Now change symbol to MCL
+    await prisma.trade.update({
+      where: { trade_id: trade.trade_id },
+      data: { symbol: "MCL" },
+    });
+
+    // Recalculate (should use MCL multiplier = 100)
+    await updateTradeCalculations(trade.trade_id);
+    updated = await prisma.trade.findUnique({ where: { trade_id: trade.trade_id } });
+    expect(updated?.net_pnl.toNumber()).toBe(100); // (71 - 70) * 1 * 100
+
+    // Clean up
+    await prisma.trade.delete({ where: { trade_id: trade.trade_id } });
+  });
+
   test("DailyChart model CRUD operations", async () => {
     const chart = await prisma.dailyChart.create({
       data: {

@@ -105,6 +105,7 @@ model ChatMessage {
   message_id String   @id @default(uuid())
   role       String   // "user", "assistant"
   content    String
+  image_data String?
   created_at DateTime @default(now())
   account_id String
   account    Account  @relation(fields: [account_id], references: [account_id], onDelete: Cascade)

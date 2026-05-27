@@ -18,6 +18,11 @@ export const SYMBOL_SPECS: { [prefix: string]: SymbolSpec } = {
   RTY: { multiplier: 50, tickSize: 0.1, tickValue: 5.00, name: "E-mini Russell 2000" },
   MYM: { multiplier: 0.5, tickSize: 1.0, tickValue: 0.50, name: "Micro E-mini Dow Jones" },
   YM: { multiplier: 5, tickSize: 1.0, tickValue: 5.00, name: "E-mini Dow Jones" },
+  MCL: { multiplier: 100, tickSize: 0.01, tickValue: 1.00, name: "Micro Crude Oil" },
+  CL: { multiplier: 1000, tickSize: 0.01, tickValue: 10.00, name: "Crude Oil" },
+  MGC: { multiplier: 10, tickSize: 0.1, tickValue: 1.00, name: "Micro Gold" },
+  GC: { multiplier: 100, tickSize: 0.1, tickValue: 10.00, name: "Gold" },
+  NG: { multiplier: 10000, tickSize: 0.001, tickValue: 10.00, name: "Natural Gas" },
 };
 
 /**

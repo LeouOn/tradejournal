@@ -2,6 +2,7 @@ import { OpenAI } from "openai";
 import { PrismaClient } from "@prisma/client";
 import dotenv from "dotenv";
 import { calculateMetrics } from "../utils/metrics";
+import { updateTradeCalculations } from "../server";
 
 dotenv.config();
 
@@ -227,15 +228,32 @@ const logTradeTool = {
       type: "object",
       properties: {
         symbol: { type: "string", description: "Ticker symbol, e.g., NQ, ES, AAPL" },
-        side: { type: "string", enum: ["BUY", "SELL"], description: "Direction of the trade execution" },
-        quantity: { type: "number", description: "Number of contracts or shares" },
-        entry_price: { type: "number", description: "Average entry price" },
+        initial_risk: { type: "number", description: "The initial risk amount in dollars or points. Default to 100 if unspecified." },
+        executions: {
+          type: "array",
+          description: "List of trade executions in chronological order (scaling in/out). Include entry and exit fills.",
+          items: {
+            type: "object",
+            properties: {
+              side: { type: "string", enum: ["BUY", "SELL"] },
+              quantity: { type: "number" },
+              fill_price: { type: "number" }
+            },
+            required: ["side", "quantity", "fill_price"]
+          }
+        },
+        tags: {
+          type: "array",
+          description: "Tags for the trade, e.g., 'Breakout', 'Wash', 'Revenge'",
+          items: { type: "string" }
+        },
         stop_loss: { type: "number", description: "Stop loss price" },
         setup_type: { type: "string", description: "Type of setup, e.g., Breakout, Mean Reversion, Range" },
         bias: { type: "string", enum: ["LONG", "SHORT", "RANGE"], description: "Market bias during the trade" },
+        rules_followed: { type: "boolean", description: "Whether the trader followed their rules on this trade. True by default if unmentioned." },
         notes: { type: "string", description: "Any additional qualitative notes about the trade" }
       },
-      required: ["symbol", "side", "quantity", "entry_price"]
+      required: ["symbol", "executions"]
     }
   }
 };
@@ -248,14 +266,28 @@ async function executeLogTrade(accountId: string, args: any) {
     embeddingStr = JSON.stringify(vec);
   }
 
+  // Calculate Status based on executions
+  let status = "OPEN";
+  let totalBuyQty = 0;
+  let totalSellQty = 0;
+  if (args.executions && Array.isArray(args.executions)) {
+    for (const ex of args.executions) {
+      if (ex.side === "BUY") totalBuyQty += Number(ex.quantity);
+      if (ex.side === "SELL") totalSellQty += Number(ex.quantity);
+    }
+    if (totalBuyQty > 0 && totalBuyQty === totalSellQty) {
+      status = "CLOSED";
+    }
+  }
+
   // 2. Create Trade
   const trade = await prisma.trade.create({
     data: {
       symbol: args.symbol.toUpperCase(),
       account_id: accountId,
-      status: "OPEN", // We log it as OPEN, calculation engine will close it if matched
+      status: status,
       manual_status: false,
-      rules_followed: true, // Optimistic default
+      rules_followed: args.rules_followed !== undefined ? args.rules_followed : true,
       notes: args.notes || "",
       notes_vector: embeddingStr,
       bias: args.bias || "RANGE",
@@ -264,21 +296,53 @@ async function executeLogTrade(accountId: string, args: any) {
     },
   });
 
-  // 3. Create initial execution
-  await prisma.execution.create({
-    data: {
-      trade_id: trade.trade_id,
-      fill_price: Number(args.entry_price),
-      quantity: Number(args.quantity),
-      side: args.side.toUpperCase(),
-      execution_timestamp: new Date(),
-    },
-  });
+  // 3. Create executions
+  if (args.executions && Array.isArray(args.executions)) {
+    for (const ex of args.executions) {
+      await prisma.execution.create({
+        data: {
+          trade_id: trade.trade_id,
+          fill_price: Number(ex.fill_price),
+          quantity: Number(ex.quantity),
+          side: ex.side.toUpperCase(),
+          execution_timestamp: new Date(),
+        },
+      });
+    }
+    // Recalculate metrics (P&L, duration, r-multiple) after saving executions
+    await updateTradeCalculations(trade.trade_id, args.initial_risk ? Number(args.initial_risk) : 100);
+  }
 
-  // 4. Trigger calculations via HTTP (or we could extract the function)
-  // Since updateTradeCalculations is in server.ts, we can just rely on the user refreshing, 
-  // or we can import updateTradeCalculations if we refactored it. 
-  // For now, it will just insert the records correctly.
+  // 4. Handle Tags
+  if (args.tags && Array.isArray(args.tags)) {
+    for (const tagName of args.tags) {
+      const cleanName = tagName.trim();
+      if (!cleanName) continue;
+      
+      // Find or create tag
+      let tag = await prisma.tag.findUnique({
+        where: { tag_name: cleanName }
+      });
+      
+      if (!tag) {
+        tag = await prisma.tag.create({
+          data: {
+            tag_name: cleanName,
+            tag_category: "Setup",
+            color_code: "#1f2937", // Default dark gray
+          }
+        });
+      }
+      
+      // Link tag to trade
+      await prisma.tradeTag.create({
+        data: {
+          trade_id: trade.trade_id,
+          tag_id: tag.tag_id
+        }
+      });
+    }
+  }
   
   return trade;
 }
@@ -291,6 +355,9 @@ export async function streamAICoach(
   userQuery: string,
   reconciliationReportJson: string | null,
   modelName: string | null,
+  image: string | null,
+  customSystemPrompt: string | null,
+  historyLimit: number,
   onToken: (token: string) => void,
   onComplete: (fullText: string) => void
 ): Promise<void> {
@@ -358,9 +425,16 @@ ${orphanText}
   const models = await getAvailableModels();
   const selectedModel = modelName || process.env.LLM_MODEL || models[0] || "local-model";
 
-  const systemPrompt = `
+  // Fetch existing tags to provide context to LLM
+  const existingTags = await prisma.tag.findMany();
+  const existingTagsList = existingTags.map(t => t.tag_name).join(", ");
+
+  let systemPrompt = `
 You are the "Antigravity Quantitative Trading Coach", an elite AI-driven performance auditor.
 Your goal is to help the trader build their statistical edge, eliminate behavioral biases (like loss aversion, FOMO, and revenge trading), and enforce mathematical discipline.
+
+When the user asks you to log a trade, extract the details carefully. Pay attention to complex trades with multiple executions (scaling in and out), such as a "wash trade" where initial profit is taken and the runner is stopped out. Provide an array of executions representing their entries and exits.
+Available tags in the database: [${existingTagsList || "None"}]. Use these tags if appropriate, or create new short, descriptive tags if a new concept is introduced (like "Wash", "Runner Stopped").
 
 Structure your analysis with these principles:
 1. Ground your observations strictly in the provided mathematical statistics (Win Rate, Profit Factor, Expectancy, and Cost of Indiscipline).
@@ -390,19 +464,34 @@ ${notesContext}
 ==============================
 `;
 
+  if (customSystemPrompt && customSystemPrompt.trim() !== "") {
+    systemPrompt = customSystemPrompt;
+  }
+
   // Fetch chat history from DB
-  let chatHistory: { role: "user" | "assistant", content: string }[] = [];
+  let chatHistory: any[] = [];
   try {
     const pastChats = await prisma.chatMessage.findMany({
       where: { account_id: accountId },
       orderBy: { created_at: "desc" },
-      take: 6, // Last 6 messages (3 turns)
+      take: historyLimit,
     });
     // Reverse because we queried descending to get recent, but LLM expects chronological
-    chatHistory = pastChats.reverse().map(c => ({
-      role: c.role as "user" | "assistant",
-      content: c.content
-    }));
+    chatHistory = pastChats.reverse().map(c => {
+      if (c.image_data) {
+        return {
+          role: c.role as "user" | "assistant",
+          content: [
+            { type: "text", text: c.content },
+            { type: "image_url", image_url: { url: c.image_data } }
+          ]
+        };
+      }
+      return {
+        role: c.role as "user" | "assistant",
+        content: c.content
+      };
+    });
   } catch (e) {
     console.warn("Could not fetch chat history for context:", e);
   }
@@ -410,12 +499,19 @@ ${notesContext}
   try {
     // We use the OpenAI-compatible streaming client exclusively to guarantee proper tool_calls handling.
     // Fallback to OpenAI compatible streaming client (which natively handles tool_calls well)
+    const userMessageContent: any = image 
+      ? [
+          { type: "text", text: userQuery },
+          { type: "image_url", image_url: { url: image } }
+        ]
+      : userQuery;
+
     const stream = await openai.chat.completions.create({
       model: selectedModel,
       messages: [
         { role: "system", content: systemPrompt },
         ...chatHistory,
-        { role: "user", content: userQuery },
+        { role: "user", content: userMessageContent },
       ],
       temperature: 0.3,
       stream: true,
@@ -448,7 +544,10 @@ ${notesContext}
       try {
         const args = JSON.parse(toolCallArgs);
         await executeLogTrade(accountId, args);
-        const msg = `\n\n✅ **Trade successfully logged!**\n- Symbol: ${args.symbol}\n- Side: ${args.side}\n- Qty: ${args.quantity}\n- Price: ${args.entry_price}`;
+        const execsFormat = args.executions ? args.executions.map((e: any) => `${e.side} ${e.quantity} @ ${e.fill_price}`).join(", ") : "";
+        const tagsFormat = args.tags ? args.tags.join(", ") : "None";
+        const rulesMsg = args.rules_followed === false ? "⚠️ Nudge: Rules were broken." : "🏆 Celebrate: Disciplined execution!";
+        const msg = `\n\n✅ **Trade successfully logged!**\n- Symbol: ${args.symbol}\n- Executions: ${execsFormat}\n- Tags: ${tagsFormat}\n- ${rulesMsg}`;
         fullText += msg;
         onToken(msg);
       } catch (err: any) {
