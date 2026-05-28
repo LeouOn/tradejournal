@@ -1,4 +1,4 @@
-import { useState, useRef, useEffect, KeyboardEvent } from "react";
+import { useState, useRef, useEffect } from "react";
 import { Send, Brain, Paperclip, X, RotateCcw, Pencil, Trash2, Check } from "lucide-react";
 import { useToast } from "../contexts/ToastContext";
 import { useSettings } from "../contexts/SettingsContext";
@@ -73,7 +73,7 @@ export default function AICoach({ accountId, onRefreshTrades, compact }: AICoach
               role: "assistant",
               content: "Hello! I am your Antigravity Quantitative Trading Coach. I analyze your trade entries, scaling behavior, qualitative emotional tags, and current Hidden Markov Model market regimes. Ask me anything, or run one of the diagnostics below.",
             },
-            ...data.map((m: any) => ({ role: m.role, content: m.content, image: m.image_data, message_id: m.message_id })),
+            ...data.map((m: { role: "user" | "assistant"; content: string; image_data?: string; message_id?: string }) => ({ role: m.role, content: m.content, image: m.image_data, message_id: m.message_id })),
           ]);
         } else {
           setMessages([
@@ -244,6 +244,7 @@ export default function AICoach({ accountId, onRefreshTrades, compact }: AICoach
                   } else {
                     toast.celebrate("Elite discipline! The AI logged your trade successfully.", "Disciplined Trade Logged!");
                   }
+                  onRefreshTrades();
                 }
               }
             } catch (e) {
@@ -252,8 +253,8 @@ export default function AICoach({ accountId, onRefreshTrades, compact }: AICoach
           }
         }
       }
-    } catch (e: any) {
-      if (e.name === "AbortError") {
+    } catch (e: unknown) {
+      if (e instanceof Error && e.name === "AbortError") {
         console.log("Inference cancelled by user.");
         return;
       }

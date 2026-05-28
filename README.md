@@ -12,14 +12,16 @@ An advanced, AI-integrated local trading journal designed for quantitative and d
 ### 2. Statement Reconciliation
 - **Ironbeam Integration**: Paste raw statement logs. The backend reconciles manual entries against broker executions, highlighting **Slippage**, **Ghost Trades** (unjournaled impulsive trades), and **Orphan Trades** (manifested but unfilled).
 
-### 3. AI Behavioral Coach (Local LLM)
+### 3. AI Behavioral Coach (Local LLM & Vision)
 - **LM Studio Integration**: Uses an OpenAI-compatible SDK pointing to `http://localhost:1234/v1`.
 - **RAG Context**: The backend automatically generates semantic vector embeddings of trade notes. When you chat with the coach, it retrieves relevant past trades and embeds your core mathematical stats.
 - **Natural Language Trade Entry**: The LLM uses function/tool calling (`log_trade`). You can tell it "I went long 2 NQ at 18000" and it will automatically execute the trade insertion in the database.
-- **Persistent Memory**: Full chat history and model selection.
+- **Vision Support**: Attach charts and screenshots to the chat. The AI will analyze the image using vision models to provide feedback on your setup.
+- **Chat Management**: Edit and delete messages, load/unload models via the LMS CLI integration, and regenerate responses.
+- **Persistent Memory**: Full chat history stored in the SQLite database.
 
-### 4. Marketpulse API & Integrations
-- **Daily Chart Gallery**: Upload and store high-resolution Base64 TradingView screenshots locally for historical reference.
+### 4. Marketpulse & Machine Learning
+- **HMM Market Regimes**: A standalone Python script trains a Gaussian Hidden Markov Model (HMM) on VIX, S&P 500 returns, and moving averages to classify the market into discrete regimes (e.g., Bullish Low Vol, Bearish High Vol). These regimes are exposed via the API and given as context to the AI coach.
 - **External API Router**: Located at `/api/external/v1`, secured via API Key. Exposes endpoints for an external "Marketpulse" dashboard to pull live equity curves, Zella scores, and AI summaries.
 
 ## 🛠 Tech Stack
