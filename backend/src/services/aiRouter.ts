@@ -102,6 +102,19 @@ export async function getAvailableModels(): Promise<string[]> {
   }
 }
 
+/**
+ * Dynamic query for loaded models from LM Studio / OpenAI (using standard /v1/models)
+ */
+export async function getLoadedModels(): Promise<string[]> {
+  try {
+    const list = await openai.models.list();
+    return list.data.map((m) => m.id);
+  } catch (error) {
+    console.warn("Failed to retrieve loaded models from AI server:", error);
+    return [];
+  }
+}
+
 interface RAGContext {
   statsText: string;
   notesContext: string;
@@ -422,8 +435,21 @@ ${orphanText}
     }
   }
 
-  const models = await getAvailableModels();
-  const selectedModel = modelName || process.env.LLM_MODEL || models[0] || "local-model";
+  const loadedModels = await getLoadedModels();
+  let selectedModel = modelName || process.env.LLM_MODEL || "";
+
+  // Try to find if selectedModel or a variant of it is in loadedModels
+  let matchedModel = loadedModels.find(m => m === selectedModel || m.startsWith(selectedModel + ":") || selectedModel.startsWith(m + ":"));
+
+  if (!matchedModel && loadedModels.length > 0) {
+    matchedModel = loadedModels[0];
+  }
+
+  if (matchedModel) {
+    selectedModel = matchedModel;
+  } else if (!selectedModel) {
+    selectedModel = "local-model";
+  }
 
   // Fetch existing tags to provide context to LLM
   const existingTags = await prisma.tag.findMany();
@@ -433,7 +459,7 @@ ${orphanText}
 You are the "Antigravity Quantitative Trading Coach", an elite AI-driven performance auditor.
 Your goal is to help the trader build their statistical edge, eliminate behavioral biases (like loss aversion, FOMO, and revenge trading), and enforce mathematical discipline.
 
-When the user asks you to log a trade, extract the details carefully. Pay attention to complex trades with multiple executions (scaling in and out), such as a "wash trade" where initial profit is taken and the runner is stopped out. Provide an array of executions representing their entries and exits.
+When the user asks you to log trades from a statement or paste, analyze the execution history chronologically. Identify each distinct flat-to-flat sequence (where the net position starts at zero, scales in/out, and returns to zero). Log each distinct trade by making a separate, parallel call to the log_trade tool. Extract executions in chronological order for each trade. If a single execution has multiple contracts or represents a scaling entry/exit, preserve it in the corresponding trade.
 Available tags in the database: [${existingTagsList || "None"}]. Use these tags if appropriate, or create new short, descriptive tags if a new concept is introduced (like "Wash", "Runner Stopped").
 
 Structure your analysis with these principles:
@@ -519,18 +545,29 @@ ${notesContext}
     });
 
     let fullText = "";
-    let toolCallName = "";
-    let toolCallArgs = "";
+    // Accumulator for parallel tool calls: index -> { name, arguments }
+    interface ToolCallAccumulator {
+      name?: string;
+      arguments: string;
+    }
+    const toolCallsMap: { [index: number]: ToolCallAccumulator } = {};
 
     for await (const chunk of stream) {
       const delta = chunk.choices[0]?.delta;
       if (delta?.tool_calls && delta.tool_calls.length > 0) {
-        // Accumulate tool call chunks
-        if (delta.tool_calls[0].function?.name) {
-          toolCallName = delta.tool_calls[0].function.name;
-        }
-        if (delta.tool_calls[0].function?.arguments) {
-          toolCallArgs += delta.tool_calls[0].function.arguments;
+        for (const tc of delta.tool_calls) {
+          const idx = tc.index;
+          if (idx === undefined) continue;
+
+          if (!toolCallsMap[idx]) {
+            toolCallsMap[idx] = { arguments: "" };
+          }
+          if (tc.function?.name) {
+            toolCallsMap[idx].name = tc.function.name;
+          }
+          if (tc.function?.arguments) {
+            toolCallsMap[idx].arguments += tc.function.arguments;
+          }
         }
       } else if (delta?.content) {
         const token = delta.content;
@@ -539,21 +576,28 @@ ${notesContext}
       }
     }
 
-    // Execute tool if invoked
-    if (toolCallName === "log_trade" && toolCallArgs) {
-      try {
-        const args = JSON.parse(toolCallArgs);
-        await executeLogTrade(accountId, args);
-        const execsFormat = args.executions ? args.executions.map((e: any) => `${e.side} ${e.quantity} @ ${e.fill_price}`).join(", ") : "";
-        const tagsFormat = args.tags ? args.tags.join(", ") : "None";
-        const rulesMsg = args.rules_followed === false ? "⚠️ Nudge: Rules were broken." : "🏆 Celebrate: Disciplined execution!";
-        const msg = `\n\n✅ **Trade successfully logged!**\n- Symbol: ${args.symbol}\n- Executions: ${execsFormat}\n- Tags: ${tagsFormat}\n- ${rulesMsg}`;
-        fullText += msg;
-        onToken(msg);
-      } catch (err: any) {
-        const msg = `\n\n❌ **Failed to log trade via tool:** ${err.message}`;
-        fullText += msg;
-        onToken(msg);
+    // Execute all accumulated tool calls in order
+    const sortedIndices = Object.keys(toolCallsMap)
+      .map(Number)
+      .sort((a, b) => a - b);
+
+    for (const idx of sortedIndices) {
+      const toolCall = toolCallsMap[idx];
+      if (toolCall.name === "log_trade" && toolCall.arguments) {
+        try {
+          const args = JSON.parse(toolCall.arguments);
+          await executeLogTrade(accountId, args);
+          const execsFormat = args.executions ? args.executions.map((e: any) => `${e.side} ${e.quantity} @ ${e.fill_price}`).join(", ") : "";
+          const tagsFormat = args.tags ? args.tags.join(", ") : "None";
+          const rulesMsg = args.rules_followed === false ? "⚠️ Nudge: Rules were broken." : "🏆 Celebrate: Disciplined execution!";
+          const msg = `\n\n✅ **Trade successfully logged!**\n- Symbol: ${args.symbol}\n- Executions: ${execsFormat}\n- Tags: ${tagsFormat}\n- ${rulesMsg}`;
+          fullText += msg;
+          onToken(msg);
+        } catch (err: any) {
+          const msg = `\n\n❌ **Failed to log trade via tool (Index ${idx}):** ${err.message}`;
+          fullText += msg;
+          onToken(msg);
+        }
       }
     }
 

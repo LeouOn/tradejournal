@@ -1031,6 +1031,66 @@ function parseIronbeamFills(rawText: string): {
     }
   }
 
+  // Enhanced daily statement confirmation format fallback
+  if (parsedExecutions.length === 0) {
+    let statementDate = new Date();
+    const dateHeaderMatch = rawText.match(/(?:Monday|Tuesday|Wednesday|Thursday|Friday|Saturday|Sunday),\s+([A-Za-z]+)\s+(\d+),\s+(\d{4})/i);
+    if (dateHeaderMatch) {
+      statementDate = new Date(`${dateHeaderMatch[1]} ${dateHeaderMatch[2]} ${dateHeaderMatch[3]}`);
+    }
+
+    let inTradesSection = false;
+    for (const line of lines) {
+      const cleanLine = line.trim();
+      if (!cleanLine) continue;
+
+      if (line.includes("THE FOLLOWING TRADES HAVE BEEN POSTED TO YOUR ACCOUNT")) {
+        inTradesSection = true;
+        continue;
+      }
+      if (inTradesSection && (line.includes("MATURITY:") || line.includes("USD FUTURE COMMISSION") || line.includes("<<<<<<<<<< PURCHASE AND SALE >>>>>>>>>>"))) {
+        inTradesSection = false;
+      }
+
+      if (inTradesSection) {
+        const genericMatch = line.match(/^(\s*)(\d+)\s+(?:CME|ICE|CBOT|NYMEX|COMEX|USD)\s+(.+?)\s+([A-Z]{3}\d{2})\s+(\d+(?:\.\d+)?)/i);
+        if (genericMatch) {
+          const qtyStr = genericMatch[2];
+          const desc = genericMatch[3].trim();
+          const price = parseFloat(genericMatch[5]);
+
+          const firstNumIndex = line.indexOf(qtyStr);
+          let side: "BUY" | "SELL" = "BUY";
+          if (firstNumIndex >= 10) {
+            side = "SELL";
+          }
+          const quantity = parseInt(qtyStr, 10);
+
+          let symbol = "MNQ";
+          const upperDesc = desc.toUpperCase();
+          if (upperDesc.includes("MICRO E-MINI NASDAQ") || upperDesc.includes("MNQ")) symbol = "MNQ";
+          else if (upperDesc.includes("E-MINI NASDAQ") || upperDesc.includes("NQ")) symbol = "NQ";
+          else if (upperDesc.includes("MICRO E-MINI S&P") || upperDesc.includes("MES")) symbol = "MES";
+          else if (upperDesc.includes("E-MINI S&P") || upperDesc.includes("ES")) symbol = "ES";
+          else if (upperDesc.includes("MICRO E-MINI RUSSELL") || upperDesc.includes("M2K")) symbol = "M2K";
+          else if (upperDesc.includes("E-MINI RUSSELL") || upperDesc.includes("RTY")) symbol = "RTY";
+          else if (upperDesc.includes("MICRO E-MINI DOW") || upperDesc.includes("MYM")) symbol = "MYM";
+          else if (upperDesc.includes("E-MINI DOW") || upperDesc.includes("YM")) symbol = "YM";
+          else if (upperDesc.includes("MICRO CRUDE") || upperDesc.includes("MCL")) symbol = "MCL";
+          else if (upperDesc.includes("CRUDE") || upperDesc.includes("CL")) symbol = "CL";
+          else if (upperDesc.includes("MICRO GOLD") || upperDesc.includes("MGC")) symbol = "MGC";
+          else if (upperDesc.includes("GOLD") || upperDesc.includes("GC")) symbol = "GC";
+          else if (upperDesc.includes("NATURAL GAS") || upperDesc.includes("NG")) symbol = "NG";
+
+          const timeOffset = parsedExecutions.length * 60 * 1000;
+          const timestamp = new Date(statementDate.getTime() + 9 * 60 * 60 * 1000 + timeOffset);
+
+          parsedExecutions.push({ side, symbol, quantity, fillPrice: price, timestamp });
+        }
+      }
+    }
+  }
+
   if (parsedExecutions.length === 0) {
     // Fallback: If regex fails to find matches, try a simple whitespace split
     lines.forEach((line: string) => {
@@ -1235,6 +1295,7 @@ app.post("/api/ingest/ironbeam/sync", async (req, res) => {
             data: {
               symbol: g.symbol,
               account_id,
+              status: "OPEN",
               notes: `Auto-created unjournaled trade from Ironbeam statement.`,
             },
           });
