@@ -1,25 +1,28 @@
 import {
-  AreaChart, Area, LineChart, Line, BarChart, Bar, Cell, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, Legend
+  AreaChart, Area, LineChart, Line, BarChart, Bar, Cell, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, Legend, ScatterChart, Scatter, ZAxis
 } from "recharts";
+import { Brain } from "lucide-react";
 import type { Trade } from "./Dashboard";
 
 interface PerformanceChartsProps {
   trades: Trade[];
   initialBalance: number;
+  onDiscussChart?: (chartName: string, chartData: any) => void;
 }
 
-export default function PerformanceCharts({ trades, initialBalance }: PerformanceChartsProps) {
+export default function PerformanceCharts({ trades, initialBalance, onDiscussChart }: PerformanceChartsProps) {
   // Sort trades chronologically
   const sortedTrades = [...trades]
     .filter((t) => t.status === "CLOSED")
     .sort((a, b) => new Date(a.created_at).getTime() - new Date(b.created_at).getTime());
 
   // 1. Calculate Cumulative P&L timeline data
-  const chartData = [];
+  let chartData: any[] = [];
   let rollingPnl = 0;
   let rollingWins = 0;
   let runningProfits = 0;
   let runningLosses = 0;
+  let peakBalance = initialBalance;
 
   for (let index = 0; index < sortedTrades.length; index++) {
     const t = sortedTrades[index];
@@ -37,16 +40,48 @@ export default function PerformanceCharts({ trades, initialBalance }: Performanc
     const rollingWinRate = totalCalculated > 0 ? (rollingWins / totalCalculated) * 100 : 0;
     const rollingPF = runningLosses > 0 ? runningProfits / runningLosses : runningProfits > 0 ? 10 : 0;
 
+    const currentBalance = initialBalance + rollingPnl;
+    peakBalance = Math.max(peakBalance, currentBalance);
+    const drawdownValue = currentBalance - peakBalance;
+    const drawdownPercent = peakBalance > 0 ? (drawdownValue / peakBalance) * 100 : 0;
+
     chartData.push({
       name: `Trade #${totalCalculated}`,
       symbol: t.symbol,
       pnl: pnl,
       cumulativePnl: rollingPnl,
-      balance: initialBalance + rollingPnl,
+      balance: currentBalance,
+      drawdown: Number(drawdownValue.toFixed(2)),
+      drawdownPct: Number(drawdownPercent.toFixed(2)),
       winRate: Math.round(rollingWinRate),
       profitFactor: Number(rollingPF.toFixed(2)),
     });
   }
+
+  // 1b. Time of Day Performance
+  const todBuckets: Record<string, { count: number, pnl: number }> = {};
+  sortedTrades.forEach(t => {
+    const d = new Date(t.created_at);
+    // Group into 1-hour blocks, formatting as "HH:00"
+    const hour = d.getHours().toString().padStart(2, '0');
+    const label = `${hour}:00`;
+    if (!todBuckets[label]) todBuckets[label] = { count: 0, pnl: 0 };
+    todBuckets[label].count++;
+    todBuckets[label].pnl += Number(t.net_pnl);
+  });
+  const todChartData = Object.keys(todBuckets).sort().map(key => ({
+    time: key,
+    pnl: Number(todBuckets[key].pnl.toFixed(2)),
+    count: todBuckets[key].count
+  }));
+
+  // 1c. Duration vs PnL Scatter
+  const scatterData = sortedTrades.map(t => ({
+    name: t.trade_id,
+    durationMin: Number((t.duration / 60).toFixed(1)),
+    pnl: Number(t.net_pnl),
+    type: Number(t.net_pnl) > 0 ? "Win" : "Loss"
+  }));
 
   // Group closed trades by calendar day for Overtrading Analytics
   const dailyTrades: { [date: string]: Trade[] } = {};
@@ -233,10 +268,38 @@ export default function PerformanceCharts({ trades, initialBalance }: Performanc
         </div>
       </div>
 
-      {/* 2. Rolling Metrics Chart */}
+      {/* 2. Advanced Equity & Drawdown */}
       <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(320px, 1fr))", gap: "20px" }}>
+        {/* Drawdown Curve */}
+        <div className="glass-panel" style={{ position: "relative" }}>
+          {onDiscussChart && (
+            <button className="btn-secondary" style={{ position: "absolute", top: "16px", right: "16px", padding: "4px 8px", fontSize: "0.75rem", display: "flex", alignItems: "center", gap: "6px" }}
+              onClick={() => onDiscussChart("Drawdown Curve", chartData.map(d => ({ trade: d.name, drawdown: d.drawdown, drawdownPct: d.drawdownPct })))}>
+              <Brain size={14} style={{ color: "var(--accent-blue)" }} /> Discuss Chart
+            </button>
+          )}
+          <h3 style={{ marginBottom: "16px", fontSize: "1.1rem" }}>Drawdown from Peak ($)</h3>
+          <div style={{ width: "100%", height: 220 }}>
+            <ResponsiveContainer>
+              <AreaChart data={chartData} margin={{ top: 5, right: 20, left: 0, bottom: 5 }}>
+                <defs>
+                  <linearGradient id="colorDrawdown" x1="0" y1="0" x2="0" y2="1">
+                    <stop offset="5%" stopColor="var(--accent-red)" stopOpacity={0.4}/>
+                    <stop offset="95%" stopColor="var(--accent-red)" stopOpacity={0.0}/>
+                  </linearGradient>
+                </defs>
+                <CartesianGrid strokeDasharray="3 3" stroke="var(--neutral-bg)" />
+                <XAxis dataKey="name" stroke="var(--text-secondary)" fontSize={10} />
+                <YAxis stroke="var(--text-secondary)" fontSize={10} domain={['dataMin', 0]} tickFormatter={(v) => `$${v}`} />
+                <Tooltip formatter={(v: number) => [`$${v}`, "Drawdown"]} />
+                <Area type="monotone" dataKey="drawdown" stroke="var(--accent-red)" strokeWidth={1.5} fillOpacity={1} fill="url(#colorDrawdown)" />
+              </AreaChart>
+            </ResponsiveContainer>
+          </div>
+        </div>
+
         {/* Rolling Win Rate */}
-        <div className="glass-panel">
+        <div className="glass-panel" style={{ position: "relative" }}>
           <h3 style={{ marginBottom: "16px", fontSize: "1.1rem" }}>Rolling Win Rate % Evolution</h3>
           <div style={{ width: "100%", height: 220 }}>
             <ResponsiveContainer>
@@ -250,19 +313,63 @@ export default function PerformanceCharts({ trades, initialBalance }: Performanc
             </ResponsiveContainer>
           </div>
         </div>
+      </div>
 
-        {/* Rolling Profit Factor */}
-        <div className="glass-panel">
-          <h3 style={{ marginBottom: "16px", fontSize: "1.1rem" }}>Rolling Profit Factor Trend</h3>
+      {/* 2b. Time of Day and Scatter Plots */}
+      <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(320px, 1fr))", gap: "20px" }}>
+        {/* Time of Day Performance */}
+        <div className="glass-panel" style={{ position: "relative" }}>
+          {onDiscussChart && (
+            <button className="btn-secondary" style={{ position: "absolute", top: "16px", right: "16px", padding: "4px 8px", fontSize: "0.75rem", display: "flex", alignItems: "center", gap: "6px" }}
+              onClick={() => onDiscussChart("Time of Day Performance", todChartData)}>
+              <Brain size={14} style={{ color: "var(--accent-blue)" }} /> Discuss Chart
+            </button>
+          )}
+          <h3 style={{ marginBottom: "8px", fontSize: "1.1rem" }}>Time of Day Performance</h3>
+          <p style={{ fontSize: "0.8rem", color: "var(--text-secondary)", marginBottom: "12px" }}>
+            Total P&L bucketed by the hour trades were initiated.
+          </p>
           <div style={{ width: "100%", height: 220 }}>
             <ResponsiveContainer>
-              <LineChart data={chartData} margin={{ top: 5, right: 20, left: 0, bottom: 5 }}>
+              <BarChart data={todChartData} margin={{ top: 5, right: 20, left: 0, bottom: 5 }}>
                 <CartesianGrid strokeDasharray="3 3" stroke="var(--neutral-bg)" />
-                <XAxis dataKey="name" stroke="var(--text-secondary)" fontSize={10} />
-                <YAxis stroke="var(--text-secondary)" fontSize={10} domain={[0, 'dataMax + 0.5']} />
-                <Tooltip />
-                <Line type="monotone" dataKey="profitFactor" stroke="var(--accent-gold)" strokeWidth={1.5} dot={false} name="Profit Factor" />
-              </LineChart>
+                <XAxis dataKey="time" stroke="var(--text-secondary)" fontSize={10} />
+                <YAxis stroke="var(--text-secondary)" fontSize={10} tickFormatter={(v) => `$${v}`} />
+                <Tooltip formatter={(v: number, name: string) => [name === "pnl" ? `$${v}` : v, name === "pnl" ? "Total P&L" : "Trades"]} />
+                <Bar dataKey="pnl" name="Total P&L" radius={[4, 4, 0, 0]}>
+                  {todChartData.map((entry, index) => {
+                    const color = entry.pnl > 0 ? "var(--accent-green)" : entry.pnl < 0 ? "var(--accent-red)" : "var(--accent-gold)";
+                    return <Cell key={`cell-${index}`} fill={color} />;
+                  })}
+                </Bar>
+              </BarChart>
+            </ResponsiveContainer>
+          </div>
+        </div>
+
+        {/* Trade Duration vs PnL Scatter Plot */}
+        <div className="glass-panel" style={{ position: "relative" }}>
+          {onDiscussChart && (
+            <button className="btn-secondary" style={{ position: "absolute", top: "16px", right: "16px", padding: "4px 8px", fontSize: "0.75rem", display: "flex", alignItems: "center", gap: "6px" }}
+              onClick={() => onDiscussChart("Duration vs PnL Scatter", scatterData)}>
+              <Brain size={14} style={{ color: "var(--accent-blue)" }} /> Discuss Chart
+            </button>
+          )}
+          <h3 style={{ marginBottom: "8px", fontSize: "1.1rem" }}>Trade Duration vs P&L</h3>
+          <p style={{ fontSize: "0.8rem", color: "var(--text-secondary)", marginBottom: "12px" }}>
+            Holding time (minutes) plotted against P&L. Are you cutting winners too quickly?
+          </p>
+          <div style={{ width: "100%", height: 220 }}>
+            <ResponsiveContainer>
+              <ScatterChart margin={{ top: 5, right: 20, left: 0, bottom: 5 }}>
+                <CartesianGrid strokeDasharray="3 3" stroke="var(--neutral-bg)" />
+                <XAxis type="number" dataKey="durationMin" name="Duration" unit="m" stroke="var(--text-secondary)" fontSize={10} />
+                <YAxis type="number" dataKey="pnl" name="PnL" unit="$" stroke="var(--text-secondary)" fontSize={10} />
+                <ZAxis range={[30, 30]} />
+                <Tooltip cursor={{ strokeDasharray: '3 3' }} />
+                <Scatter name="Wins" data={scatterData.filter(d => d.type === "Win")} fill="var(--accent-green)" />
+                <Scatter name="Losses" data={scatterData.filter(d => d.type === "Loss")} fill="var(--accent-red)" />
+              </ScatterChart>
             </ResponsiveContainer>
           </div>
         </div>
@@ -272,7 +379,13 @@ export default function PerformanceCharts({ trades, initialBalance }: Performanc
       <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(320px, 1fr))", gap: "20px" }}>
         
         {/* Overtrading Impact (Daily Trade Count vs Average Day P&L) */}
-        <div className="glass-panel" style={{ display: "flex", flexDirection: "column", justifyContent: "space-between" }}>
+        <div className="glass-panel" style={{ display: "flex", flexDirection: "column", justifyContent: "space-between", position: "relative" }}>
+          {onDiscussChart && (
+            <button className="btn-secondary" style={{ position: "absolute", top: "16px", right: "16px", padding: "4px 8px", fontSize: "0.75rem", display: "flex", alignItems: "center", gap: "6px", zIndex: 10 }}
+              onClick={() => onDiscussChart("Overtrading Impact", overtradingChartData)}>
+              <Brain size={14} style={{ color: "var(--accent-blue)" }} /> Discuss Chart
+            </button>
+          )}
           <div>
             <h3 style={{ marginBottom: "8px", fontSize: "1.1rem" }}>Overtrading Impact</h3>
             <p style={{ fontSize: "0.8rem", color: "var(--text-secondary)", marginBottom: "12px" }}>
