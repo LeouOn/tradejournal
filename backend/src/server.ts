@@ -5,11 +5,13 @@ import cors from "cors";
 import dotenv from "dotenv";
 import { PrismaClient } from "@prisma/client";
 import { generateEmbedding, streamAICoach, getAvailableModels } from "./services/aiRouter";
+import { getOrCreateSession, getMostRecentSession } from "./services/chatSession";
 import { calculateMetrics } from "./utils/metrics";
 import { getSymbolMultiplier, validatePriceProximity } from "./utils/multipliers";
 import fs from "fs";
 import path from "path";
 import externalApiRouter, { setRegimeUpdater } from "./routes/externalApi";
+import dojoRouter from "./routes/dojo";
 import { spawn, exec } from "child_process";
 import cron from "node-cron";
 import { OpenAI } from "openai";
@@ -35,6 +37,9 @@ app.use("/uploads", express.static(uploadsDir));
 
 // Wire up the external API router for Marketpulse
 app.use("/api/external", externalApiRouter);
+
+// Wire up the Dojo router
+app.use("/api/dojo", dojoRouter);
 
 // Active WebSocket connections
 const clients = new Set<WebSocket>();
@@ -148,24 +153,109 @@ app.post("/api/accounts", async (req, res) => {
   }
 });
 
+app.post("/api/ai/chats/compress", async (req, res) => {
+  const { accountId } = req.body;
+  if (!accountId) return res.status(400).json({ error: "accountId is required" });
+
+  try {
+    const { compressChatHistory } = await import("./services/compression");
+    const result = await compressChatHistory(String(accountId));
+    res.json(result);
+  } catch (error: any) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+/**
+ * ----------------------------------------------------
+ * CHAT SESSION CRUD ENDPOINTS
+ * ----------------------------------------------------
+ */
+
+// List all sessions for an account, ordered by updated_at desc
+app.get("/api/ai/chats/sessions", async (req, res) => {
+  const { accountId } = req.query;
+  if (!accountId) {
+    return res.status(400).json({ error: "accountId is required" });
+  }
+  try {
+    const sessions = await prisma.chatSession.findMany({
+      where: { account_id: String(accountId) },
+      orderBy: { updated_at: "desc" },
+    });
+    res.json(sessions);
+  } catch (error: any) {
+    console.error("Failed to fetch chat sessions:", error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// Create a new session
+app.post("/api/ai/chats/sessions", async (req, res) => {
+  const { accountId, title } = req.body;
+  if (!accountId) {
+    return res.status(400).json({ error: "accountId is required" });
+  }
+  try {
+    const session = await prisma.chatSession.create({
+      data: {
+        title: title || "New Chat",
+        account_id: String(accountId),
+      },
+    });
+    res.json(session);
+  } catch (error: any) {
+    console.error("Failed to create chat session:", error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// Delete a session (cascades to messages via schema onDelete: Cascade)
+app.delete("/api/ai/chats/sessions/:sessionId", async (req, res) => {
+  const { sessionId } = req.params;
+  try {
+    await prisma.chatSession.delete({
+      where: { session_id: sessionId },
+    });
+    res.json({ success: true });
+  } catch (error: any) {
+    console.error("Failed to delete chat session:", error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
 /**
  * ----------------------------------------------------
  * TRADES & EXECUTIONS ENDPOINTS (Phase 1 core focus)
  * ----------------------------------------------------
  */
+import { applyLIFOMatching } from "./utils/matchingEngines";
+
 app.get("/api/trades", async (req, res) => {
-  const { accountId } = req.query;
+  const { accountId, matchingEngine } = req.query;
   try {
-    const trades = await prisma.trade.findMany({
-      where: accountId ? { account_id: String(accountId) } : undefined,
-      include: {
-        executions: true,
-        trade_tags: { include: { tag: true } },
-        market_context: true,
-      },
-      orderBy: { created_at: "desc" },
-    });
-    res.json(trades);
+    if (matchingEngine === "LIFO") {
+      // For LIFO, we need to fetch raw executions and process them
+      const executions = await prisma.execution.findMany({
+        where: accountId ? { trade: { account_id: String(accountId) } } : undefined,
+        orderBy: { execution_timestamp: "asc" }
+      });
+      const virtualTrades = applyLIFOMatching(executions, String(accountId));
+      // Return them sorted by latest first
+      res.json(virtualTrades.sort((a, b) => b.created_at.getTime() - a.created_at.getTime()));
+    } else {
+      // Standard FIFO database fetch
+      const trades = await prisma.trade.findMany({
+        where: accountId ? { account_id: String(accountId) } : undefined,
+        include: {
+          executions: true,
+          trade_tags: { include: { tag: true } },
+          market_context: true,
+        },
+        orderBy: { created_at: "desc" },
+      });
+      res.json(trades);
+    }
   } catch (error: any) {
     res.status(500).json({ error: error.message });
   }
@@ -701,6 +791,7 @@ app.delete("/api/executions/:executionId", async (req, res) => {
  */
 app.get("/api/stats/:accountId", async (req, res) => {
   const { accountId } = req.params;
+  const { matchingEngine } = req.query;
   try {
     const account = await prisma.account.findUnique({
       where: { account_id: accountId },
@@ -710,12 +801,21 @@ app.get("/api/stats/:accountId", async (req, res) => {
       return res.status(404).json({ error: "Account not found" });
     }
 
-    const trades = await prisma.trade.findMany({
-      where: { account_id: accountId },
-      include: { executions: true, trade_tags: { include: { tag: true } }, market_context: true },
-    });
+    let trades;
+    if (matchingEngine === "LIFO") {
+      const executions = await prisma.execution.findMany({
+        where: { trade: { account_id: accountId } },
+        orderBy: { execution_timestamp: "asc" }
+      });
+      trades = applyLIFOMatching(executions, accountId);
+    } else {
+      trades = await prisma.trade.findMany({
+        where: { account_id: accountId },
+        include: { executions: true, trade_tags: { include: { tag: true } }, market_context: true },
+      });
+    }
 
-    const metrics = calculateMetrics(trades, Number(account.initial_balance));
+    const metrics = calculateMetrics(trades as any, Number(account.initial_balance));
     res.json(metrics);
   } catch (error: any) {
     res.status(500).json({ error: error.message });
@@ -830,7 +930,7 @@ app.post("/api/ai/models/unload", (req, res) => {
  * ----------------------------------------------------
  */
 app.post("/api/ai/coach", async (req, res) => {
-  const { accountId, query, reconciliationReport, model, image, systemPrompt, historyLimit } = req.body;
+  const { accountId, query, reconciliationReport, model, image, systemPrompt, historyLimit, sessionId } = req.body;
 
   if (!accountId || !query) {
     return res.status(400).json({ error: "accountId and query parameters are required" });
@@ -846,6 +946,17 @@ app.post("/api/ai/coach", async (req, res) => {
     res.write(":\n\n");
   }, 15000);
 
+  // Resolve or auto-create the chat session
+  let resolvedSessionId = sessionId || null;
+  if (!resolvedSessionId) {
+    try {
+      const session = await getOrCreateSession(prisma, String(accountId), String(query));
+      resolvedSessionId = session.session_id;
+    } catch (e) {
+      console.error("Failed to resolve/create chat session:", e);
+    }
+  }
+
   // Save the user message to ChatMessage table
   let userMsgId = "";
   try {
@@ -855,6 +966,7 @@ app.post("/api/ai/coach", async (req, res) => {
         content: String(query),
         account_id: String(accountId),
         image_data: image ? String(image) : null,
+        session_id: resolvedSessionId,
       },
     });
     userMsgId = userMsg.message_id;
@@ -862,7 +974,7 @@ app.post("/api/ai/coach", async (req, res) => {
     console.error("Failed to save user chat log:", e);
   }
 
-  res.write(`data: ${JSON.stringify({ user_message_id: userMsgId })}\n\n`);
+  res.write(`data: ${JSON.stringify({ user_message_id: userMsgId, session_id: resolvedSessionId })}\n\n`);
 
   try {
     await streamAICoach(
@@ -886,6 +998,7 @@ app.post("/api/ai/coach", async (req, res) => {
               role: "assistant",
               content: fullText,
               account_id: String(accountId),
+              session_id: resolvedSessionId,
             },
           });
           assistantMsgId = asstMsg.message_id;
@@ -893,7 +1006,7 @@ app.post("/api/ai/coach", async (req, res) => {
           console.error("Failed to save assistant chat log:", e);
         }
 
-        res.write(`data: ${JSON.stringify({ complete: true, fullText, message_id: assistantMsgId })}\n\n`);
+        res.write(`data: ${JSON.stringify({ complete: true, fullText, message_id: assistantMsgId, session_id: resolvedSessionId })}\n\n`);
         clearInterval(keepAlive);
         res.end();
       }
@@ -920,13 +1033,24 @@ app.get("/api/ai/models", async (req, res) => {
 
 // Endpoint to fetch chat message history for an account
 app.get("/api/ai/chats", async (req, res) => {
-  const { accountId } = req.query;
+  const { accountId, sessionId } = req.query;
   if (!accountId) {
     return res.status(400).json({ error: "accountId is required" });
   }
   try {
+    let filterSessionId = sessionId ? String(sessionId) : undefined;
+
+    // Backward compat: if no sessionId, use the most recent session
+    if (!filterSessionId) {
+      const recentSession = await getMostRecentSession(prisma, String(accountId));
+      filterSessionId = recentSession?.session_id;
+    }
+
     const chats = await prisma.chatMessage.findMany({
-      where: { account_id: String(accountId) },
+      where: {
+        account_id: String(accountId),
+        ...(filterSessionId ? { session_id: filterSessionId } : {}),
+      },
       orderBy: { created_at: "asc" },
     });
     res.json(chats);
