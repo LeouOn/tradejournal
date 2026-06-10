@@ -8,6 +8,12 @@ import { generateEmbedding, streamAICoach, getAvailableModels } from "./services
 import { getOrCreateSession, getMostRecentSession } from "./services/chatSession";
 import { calculateMetrics } from "./utils/metrics";
 import { getSymbolMultiplier, validatePriceProximity } from "./utils/multipliers";
+import {
+  parsePrimaryRegex,
+  parseDailyStatement,
+  parseSimpleSplit,
+  parseOrderIdFormat,
+} from "./utils/ironbeamParsers";
 import fs from "fs";
 import path from "path";
 import externalApiRouter, { setRegimeUpdater } from "./routes/externalApi";
@@ -1114,9 +1120,6 @@ app.delete("/api/ai/chats/:messageId", async (req, res) => {
   }
 });
 
-/**
- * Helper: Parses raw Ironbeam statement text fills list
- */
 function parseIronbeamFills(rawText: string): {
   side: "BUY" | "SELL";
   symbol: string;
@@ -1125,132 +1128,19 @@ function parseIronbeamFills(rawText: string): {
   timestamp: Date;
 }[] {
   const lines = rawText.split("\n");
-  const parsedExecutions: {
-    side: "BUY" | "SELL";
-    symbol: string;
-    quantity: number;
-    fillPrice: number;
-    timestamp: Date;
-  }[] = [];
 
-  for (const line of lines) {
-    const cleanLine = line.toUpperCase().trim();
-    if (!cleanLine) continue;
+  let parsedExecutions = parsePrimaryRegex(lines);
 
-    // Regex matching standard futures fill pattern
-    // e.g. BUY 2 ES M6 5120.00 05/22 10:24:12
-    const regex = /(BUY|SELL|BOT|SLD)\s+(\d+)\s+([A-Z0-9\s]+?)\s+(\d+(?:\.\d+)?)\s+(?:(?:\d{2}\/\d{2})\s+)?(\d{2}:\d{2}:\d{2})/;
-    const match = cleanLine.match(regex);
-
-    if (match) {
-      const sideRaw = match[1];
-      const side = (sideRaw === "BUY" || sideRaw === "BOT") ? "BUY" : "SELL";
-      const quantity = parseInt(match[2], 10);
-      const symbolRaw = match[3];
-      const fillPrice = parseFloat(match[4]);
-      const timeStr = match[5];
-
-      // Futures symbol normalization
-      let symbol = symbolRaw;
-      if (symbolRaw.startsWith("ES")) symbol = "ES";
-      else if (symbolRaw.startsWith("NQ")) symbol = "NQ";
-      else if (symbolRaw.startsWith("RTY")) symbol = "RTY";
-      else if (symbolRaw.startsWith("YM")) symbol = "YM";
-
-      const dateStr = new Date().toLocaleDateString();
-      const timestamp = new Date(`${dateStr} ${timeStr}`);
-
-      parsedExecutions.push({ side, symbol, quantity, fillPrice, timestamp });
-    }
-  }
-
-  // Enhanced daily statement confirmation format fallback
   if (parsedExecutions.length === 0) {
-    let statementDate = new Date();
-    const dateHeaderMatch = rawText.match(/(?:Monday|Tuesday|Wednesday|Thursday|Friday|Saturday|Sunday),\s+([A-Za-z]+)\s+(\d+),\s+(\d{4})/i);
-    if (dateHeaderMatch) {
-      statementDate = new Date(`${dateHeaderMatch[1]} ${dateHeaderMatch[2]} ${dateHeaderMatch[3]}`);
-    }
-
-    let inTradesSection = false;
-    for (const line of lines) {
-      const cleanLine = line.trim();
-      if (!cleanLine) continue;
-
-      if (line.includes("THE FOLLOWING TRADES HAVE BEEN POSTED TO YOUR ACCOUNT")) {
-        inTradesSection = true;
-        continue;
-      }
-      if (inTradesSection && (line.includes("MATURITY:") || line.includes("USD FUTURE COMMISSION") || line.includes("<<<<<<<<<< PURCHASE AND SALE >>>>>>>>>>"))) {
-        inTradesSection = false;
-      }
-
-      if (inTradesSection) {
-        const genericMatch = line.match(/^(\s*)(\d+)\s+(?:CME|ICE|CBOT|NYMEX|COMEX|USD)\s+(.+?)\s+([A-Z]{3}\d{2})\s+(\d+(?:\.\d+)?)/i);
-        if (genericMatch) {
-          const qtyStr = genericMatch[2];
-          const desc = genericMatch[3].trim();
-          const price = parseFloat(genericMatch[5]);
-
-          const firstNumIndex = line.indexOf(qtyStr);
-          let side: "BUY" | "SELL" = "BUY";
-          if (firstNumIndex >= 10) {
-            side = "SELL";
-          }
-          const quantity = parseInt(qtyStr, 10);
-
-          let symbol = "MNQ";
-          const upperDesc = desc.toUpperCase();
-          if (upperDesc.includes("MICRO E-MINI NASDAQ") || upperDesc.includes("MNQ")) symbol = "MNQ";
-          else if (upperDesc.includes("E-MINI NASDAQ") || upperDesc.includes("NQ")) symbol = "NQ";
-          else if (upperDesc.includes("MICRO E-MINI S&P") || upperDesc.includes("MES")) symbol = "MES";
-          else if (upperDesc.includes("E-MINI S&P") || upperDesc.includes("ES")) symbol = "ES";
-          else if (upperDesc.includes("MICRO E-MINI RUSSELL") || upperDesc.includes("M2K")) symbol = "M2K";
-          else if (upperDesc.includes("E-MINI RUSSELL") || upperDesc.includes("RTY")) symbol = "RTY";
-          else if (upperDesc.includes("MICRO E-MINI DOW") || upperDesc.includes("MYM")) symbol = "MYM";
-          else if (upperDesc.includes("E-MINI DOW") || upperDesc.includes("YM")) symbol = "YM";
-          else if (upperDesc.includes("MICRO CRUDE") || upperDesc.includes("MCL")) symbol = "MCL";
-          else if (upperDesc.includes("CRUDE") || upperDesc.includes("CL")) symbol = "CL";
-          else if (upperDesc.includes("MICRO GOLD") || upperDesc.includes("MGC")) symbol = "MGC";
-          else if (upperDesc.includes("GOLD") || upperDesc.includes("GC")) symbol = "GC";
-          else if (upperDesc.includes("NATURAL GAS") || upperDesc.includes("NG")) symbol = "NG";
-
-          const timeOffset = parsedExecutions.length * 60 * 1000;
-          const timestamp = new Date(statementDate.getTime() + 9 * 60 * 60 * 1000 + timeOffset);
-
-          parsedExecutions.push({ side, symbol, quantity, fillPrice: price, timestamp });
-        }
-      }
-    }
+    parsedExecutions = parseDailyStatement(lines, rawText);
   }
 
   if (parsedExecutions.length === 0) {
-    // Fallback: If regex fails to find matches, try a simple whitespace split
-    lines.forEach((line: string) => {
-      const parts = line.split(/[,\t\s]+/);
-      if (parts.length >= 4) {
-        const sideCandidate = parts[0].toUpperCase();
-        const side = (sideCandidate.startsWith("B") || sideCandidate.startsWith("BUY") || sideCandidate.startsWith("BOT")) ? "BUY" : (sideCandidate.startsWith("S") || sideCandidate.startsWith("SELL") || sideCandidate.startsWith("SLD")) ? "SELL" : null;
-        const qty = parseInt(parts[1], 10);
-        const symbolRaw = parts[2].toUpperCase();
-        const price = parseFloat(parts[3]);
-        if (side && !isNaN(qty) && symbolRaw && !isNaN(price)) {
-          let symbol = symbolRaw;
-          if (symbolRaw.startsWith("ES")) symbol = "ES";
-          else if (symbolRaw.startsWith("NQ")) symbol = "NQ";
-          else if (symbolRaw.startsWith("RTY")) symbol = "RTY";
-          else if (symbolRaw.startsWith("YM")) symbol = "YM";
+    parsedExecutions = parseSimpleSplit(lines);
+  }
 
-          parsedExecutions.push({
-            side,
-            symbol,
-            quantity: qty,
-            fillPrice: price,
-            timestamp: new Date(),
-          });
-        }
-      }
-    });
+  if (parsedExecutions.length === 0) {
+    parsedExecutions = parseOrderIdFormat(lines);
   }
 
   return parsedExecutions;
