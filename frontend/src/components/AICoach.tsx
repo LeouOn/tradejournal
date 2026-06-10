@@ -1,7 +1,10 @@
 import { useState, useRef, useEffect } from "react";
-import { Send, Brain, Paperclip, X, RotateCcw, Pencil, Trash2, Check } from "lucide-react";
+import { Send, Brain, Paperclip, X, RotateCcw, Pencil, Trash2, Check, Archive, Activity, PanelLeftOpen, Maximize2, Minimize2, Columns2 } from "lucide-react";
+import type { ViewMode } from "../lib/paneState";
 import { useToast } from "../contexts/ToastContext";
 import { useSettings } from "../contexts/SettingsContext";
+import PerformanceCharts from "./PerformanceCharts";
+import CalendarView from "./CalendarView";
 
 interface Message {
   role: "user" | "assistant";
@@ -14,9 +17,18 @@ interface AICoachProps {
   accountId: string;
   onRefreshTrades: () => void;
   compact?: boolean;
+  initialPrompt?: string;
+  trades?: any[];
+  initialBalance?: number;
+  onMountWidget?: (component: string) => void;
+  onToggleEngine?: (engine: "FIFO" | "LIFO") => void;
+  /** Called when user wants to change the pane layout mode */
+  onPaneModeChange?: (mode: ViewMode) => void;
+  /** Current pane layout mode — controls which buttons are shown */
+  paneMode?: ViewMode;
 }
 
-export default function AICoach({ accountId, onRefreshTrades, compact }: AICoachProps) {
+export default function AICoach({ accountId, onRefreshTrades, compact = false, initialPrompt = "", trades = [], initialBalance = 0, onMountWidget, onToggleEngine, onPaneModeChange, paneMode = "split" }: AICoachProps) {
   const toast = useToast();
   const { settings } = useSettings();
 
@@ -48,6 +60,12 @@ export default function AICoach({ accountId, onRefreshTrades, compact }: AICoach
   useEffect(() => {
     chatBottomRef.current?.scrollIntoView({ behavior: "smooth" });
   }, [messages, isTyping]);
+
+  useEffect(() => {
+    if (initialPrompt) {
+      setInputMessage(initialPrompt);
+    }
+  }, [initialPrompt]);
 
   // Fetch available models
   useEffect(() => {
@@ -86,6 +104,38 @@ export default function AICoach({ accountId, onRefreshTrades, compact }: AICoach
       })
       .catch((err) => console.error("Error fetching chats:", err));
   }, [accountId]);
+
+  const [isCompressing, setIsCompressing] = useState(false);
+
+  const handleCompressMemory = async () => {
+    if (!window.confirm("Are you sure you want to compress your chat history? This will generate a dense memory block and archive raw history to improve speed.")) return;
+    setIsCompressing(true);
+    try {
+      const res = await fetch("http://localhost:5000/api/ai/chats/compress", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ accountId })
+      });
+      if (res.ok) {
+        toast.success("History compressed successfully into a dense memory block.");
+        const chatRes = await fetch(`http://localhost:5000/api/ai/chats?accountId=${accountId}`);
+        const data = await chatRes.json();
+        if (Array.isArray(data) && data.length > 0) {
+          setMessages([
+            { role: "assistant", content: "Hello! I am your Antigravity Quantitative Trading Coach..." },
+            ...data.map((m: any) => ({ role: m.role, content: m.content, image: m.image_data, message_id: m.message_id }))
+          ]);
+        }
+      } else {
+        toast.error("Failed to compress history.");
+      }
+    } catch (e) {
+      console.error(e);
+      toast.error("Network error compressing history.");
+    } finally {
+      setIsCompressing(false);
+    }
+  };
 
   const handleClearChat = async () => {
     if (!window.confirm("Are you sure you want to clear your chat history?")) return;
@@ -337,8 +387,8 @@ export default function AICoach({ accountId, onRefreshTrades, compact }: AICoach
   const diagnosticSuggestions = [
     { label: "Performance Snapshot", query: "Give me a full breakdown of my current performance stats, expectancy, and where my edge is strongest." },
     { label: "Rule Adherence Audit", query: "Analyze my rule adherence, identify any violations, and calculate the cost of indiscipline across my trades." },
-    { label: "Regime vs. Expectancy", query: "Compare my expectancy across different market regimes. Where am I profitable and where am I bleeding?" },
-    { label: "Execution Quality Review", query: "Audit my execution quality: slippage, fill timing, position sizing, and whether my scaling is helping or hurting expectancy." },
+    { label: "Audit Worst Trade", query: "Please identify and heavily critique my single worst trade logged. What critical mistakes did I make in execution and sizing?" },
+    { label: "Identify Leaks", query: "Analyze all my recent data and identify my biggest statistical leak. Be brutally honest." }
   ];
 
   return (
@@ -350,6 +400,48 @@ export default function AICoach({ accountId, onRefreshTrades, compact }: AICoach
           <div style={{ display: "flex", alignItems: "center", gap: "10px" }}>
             <Brain style={{ color: "var(--accent-blue)" }} />
             <h3 style={{ fontSize: "1.1rem" }}>AI Diagnostic Coach</h3>
+            <div style={{ display: "flex", gap: "2px", marginLeft: "4px" }}>
+              {paneMode === "split" && (
+                <>
+                  <button
+                    type="button"
+                    onClick={() => onPaneModeChange?.("minimized")}
+                    title="Minimize coach"
+                    style={{ background: "transparent", border: "none", cursor: "pointer", color: "var(--text-secondary)", padding: "4px", display: "flex", alignItems: "center" }}
+                  >
+                    <Minimize2 size={14} />
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => onPaneModeChange?.("maximized")}
+                    title="Maximize coach"
+                    style={{ background: "transparent", border: "none", cursor: "pointer", color: "var(--text-secondary)", padding: "4px", display: "flex", alignItems: "center" }}
+                  >
+                    <Maximize2 size={14} />
+                  </button>
+                </>
+              )}
+              {paneMode === "maximized" && (
+                <button
+                  type="button"
+                  onClick={() => onPaneModeChange?.("split")}
+                  title="Restore split view"
+                  style={{ background: "transparent", border: "none", cursor: "pointer", color: "var(--text-secondary)", padding: "4px", display: "flex", alignItems: "center" }}
+                >
+                  <Columns2 size={14} />
+                </button>
+              )}
+              {paneMode === "minimized" && (
+                <button
+                  type="button"
+                  onClick={() => onPaneModeChange?.("split")}
+                  title="Expand coach"
+                  style={{ background: "transparent", border: "none", cursor: "pointer", color: "var(--text-secondary)", padding: "4px", display: "flex", alignItems: "center" }}
+                >
+                  <PanelLeftOpen size={14} />
+                </button>
+              )}
+            </div>
           </div>
           <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
             <select
@@ -387,6 +479,14 @@ export default function AICoach({ accountId, onRefreshTrades, compact }: AICoach
                 </button>
               </>
             )}
+            <button
+              className="btn-secondary"
+              style={{ padding: "4px 8px", fontSize: "0.75rem", height: "30px", display: "flex", alignItems: "center", justifyContent: "center", gap: "4px" }}
+              onClick={handleCompressMemory}
+              disabled={isCompressing}
+            >
+              <Archive size={12} /> {isCompressing ? "Compressing..." : "Compress History"}
+            </button>
             <button
               className="btn-secondary"
               style={{ padding: "4px 8px", fontSize: "0.75rem", height: "30px", display: "flex", alignItems: "center", justifyContent: "center" }}
@@ -448,7 +548,78 @@ export default function AICoach({ accountId, onRefreshTrades, compact }: AICoach
                     </div>
                   </div>
                 ) : (
-                  <div>{m.content}</div>
+                  <div>
+                    {m.content.split(/(\[WIDGET:\s*\{.*?\}\s*\]|\[LENS_TOGGLE:\s*\{.*?\}\s*\])/g).map((part, i) => {
+                      if (part.startsWith("[WIDGET:")) {
+                        try {
+                          const jsonStr = part.replace("[WIDGET:", "").replace(/\]$/, "").trim();
+                          const obj = JSON.parse(jsonStr);
+                          
+                          // Trigger side-effect outside of render by scheduling it to the next tick,
+                          // but only if the function exists. This prevents state updates during render loop.
+                          if (onMountWidget) {
+                            setTimeout(() => {
+                              onMountWidget(obj.component);
+                            }, 50);
+                          }
+                          
+                          return (
+                            <div key={i} style={{ 
+                              marginTop: "10px", 
+                              padding: "12px", 
+                              background: "rgba(10, 132, 255, 0.15)", 
+                              borderRadius: "8px", 
+                              border: "1px solid var(--accent-blue)",
+                              display: "flex",
+                              alignItems: "center",
+                              gap: "10px"
+                            }}>
+                              <Brain size={18} style={{ color: "var(--accent-blue)" }} />
+                              <div style={{ display: "flex", flexDirection: "column" }}>
+                                <span style={{ fontSize: "0.85rem", fontWeight: "bold", color: "var(--accent-blue)" }}>Widget Deployed</span>
+                                <span style={{ fontSize: "0.75rem", color: "var(--text-secondary)" }}>Check the dynamic canvas on the right for: {obj.component}</span>
+                              </div>
+                            </div>
+                          );
+                        } catch (e) {
+                          return <span key={i}>{part}</span>;
+                        }
+                      } else if (part.startsWith("[LENS_TOGGLE:")) {
+                        try {
+                          const jsonStr = part.replace("[LENS_TOGGLE:", "").replace(/\]$/, "").trim();
+                          const obj = JSON.parse(jsonStr);
+                          
+                          if (onToggleEngine) {
+                            setTimeout(() => {
+                              onToggleEngine(obj.engine);
+                            }, 50);
+                          }
+
+                          return (
+                            <div key={i} style={{ 
+                              marginTop: "10px", 
+                              padding: "12px", 
+                              background: "rgba(52, 211, 153, 0.15)", 
+                              borderRadius: "8px", 
+                              border: "1px solid var(--accent-green)",
+                              display: "flex",
+                              alignItems: "center",
+                              gap: "10px"
+                            }}>
+                              <Activity size={18} style={{ color: "var(--accent-green)" }} />
+                              <div style={{ display: "flex", flexDirection: "column" }}>
+                                <span style={{ fontSize: "0.85rem", fontWeight: "bold", color: "var(--accent-green)" }}>Lens Swapped</span>
+                                <span style={{ fontSize: "0.75rem", color: "var(--text-secondary)" }}>The backend engine is now filtering your data via: {obj.engine}</span>
+                              </div>
+                            </div>
+                          );
+                        } catch (e) {
+                          return <span key={i}>{part}</span>;
+                        }
+                      }
+                      return <span key={i}>{part}</span>;
+                    })}
+                  </div>
                 )}
               </div>
               

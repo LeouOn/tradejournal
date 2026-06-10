@@ -10,17 +10,21 @@ import PerformanceCharts from "./components/PerformanceCharts";
 import CalendarView from "./components/CalendarView";
 import TradeReplay from "./components/TradeReplay";
 import AICoach from "./components/AICoach";
+import AppLayout, { useLayoutState } from "./components/AppLayout";
 import Settings from "./components/Settings";
 import MarketAnalysis from "./components/MarketAnalysis";
 import type { RegimeData } from "./components/MarketAnalysis";
 import Playbooks from "./components/Playbooks";
+import { TrainingDojo } from "./components/TrainingDojo";
 import { useSettings } from "./contexts/SettingsContext";
 import { useToast } from "./contexts/ToastContext";
 
 export default function App() {
   const { settings } = useSettings();
   const toast = useToast();
-  const [activeTab, setActiveTab] = useState<string>("dashboard");
+  const [activeCanvasComponent, setActiveCanvasComponent] = useState<string>("Dashboard");
+  const [matchingEngine, setMatchingEngine] = useState<"FIFO" | "LIFO">("FIFO");
+  const [isMenuOpen, setIsMenuOpen] = useState<boolean>(false);
   const [accountId, setAccountId] = useState<string>("");
   const [accountBalance, setAccountBalance] = useState<number>(50000);
   const [trades, setTrades] = useState<Trade[]>([]);
@@ -40,9 +44,11 @@ export default function App() {
   });
 
   const [selectedTrade, setSelectedTrade] = useState<Trade | null>(null);
+  const [coachInitialPrompt, setCoachInitialPrompt] = useState<string>("");
   const [marketRegime, setMarketRegime] = useState<RegimeData>({ regime_type: "Bullish - Low Volatility" });
   const [showMarketAnalysis, setShowMarketAnalysis] = useState(false);
   const [wsStatus, setWsStatus] = useState<"connected" | "disconnected">("disconnected");
+  const { viewMode, splitPercent, handleModeChange, handleSplitChange } = useLayoutState(40);
 
   // 1. Fetch or initialize default account
   const loadAccount = useCallback(async () => {
@@ -76,11 +82,11 @@ export default function App() {
   const loadDashboardData = useCallback(async () => {
     if (!accountId) return;
     try {
-      const tradesRes = await fetch(`http://localhost:5000/api/trades?accountId=${accountId}`);
+      const tradesRes = await fetch(`http://localhost:5000/api/trades?accountId=${accountId}&matchingEngine=${matchingEngine}`);
       const tradesData = await tradesRes.json();
       setTrades(tradesData);
 
-      const statsRes = await fetch(`http://localhost:5000/api/stats/${accountId}`);
+      const statsRes = await fetch(`http://localhost:5000/api/stats/${accountId}?matchingEngine=${matchingEngine}`);
       const statsData = await statsRes.json();
       setStats(statsData);
 
@@ -90,7 +96,7 @@ export default function App() {
     } catch (e) {
       console.error("Error refreshing dashboard stats:", e);
     }
-  }, [accountId]);
+  }, [accountId, matchingEngine]);
 
   // Run on mount
   useEffect(() => {
@@ -153,282 +159,199 @@ export default function App() {
 
   const handleSelectTradeForReplay = (trade: Trade) => {
     setSelectedTrade(trade);
-    setActiveTab("replay");
+    setActiveCanvasComponent("TradeReplay");
+  };
+
+  const handleDiscussChart = (chartName: string, chartData: any) => {
+    const prompt = `Coach, please analyze my ${chartName}. Here is the raw statistical data:\n\n${JSON.stringify(chartData, null, 2)}\n\nWhat are my behavioral leaks and what strict rules should I implement?`;
+    setCoachInitialPrompt(prompt);
+  };
+
+  const handleDiscussTrade = (trade: Trade) => {
+    const prompt = `Coach, I want to deep dive on this specific trade (${trade.symbol}). Here is the raw data:\n\n${JSON.stringify({ duration: trade.duration, pnl: trade.net_pnl, tags: trade.trade_tags, executions: trade.executions }, null, 2)}\n\nAnalyze my execution scaling and provide critical feedback on my behavior.`;
+    setCoachInitialPrompt(prompt);
   };
 
   return (
-    <div style={{ display: "flex", minHeight: "100vh" }}>
-      {/* Sidebar navigation */}
-      <div 
-        className="glass-panel" 
-        style={{ 
-          width: settings.compactSidebar ? "200px" : "260px", 
-          borderRadius: "0px", 
-          borderRight: "1px solid var(--border-color)", 
-          borderTop: "none", 
-          borderBottom: "none", 
-          borderLeft: "none",
-          display: "flex",
-          flexDirection: "column",
-          justifyContent: "space-between",
-          padding: "24px 16px",
-          transition: "width var(--transition-normal)"
-        }}
-      >
-        <div style={{ display: "flex", flexDirection: "column", gap: "30px" }}>
-          {/* App title logo */}
-          <div style={{ display: "flex", alignItems: "center", gap: "10px" }}>
-            <Activity style={{ color: "var(--accent-blue)" }} size={24} />
-            <h2 style={{ fontSize: "1.2rem", fontWeight: "bold" }} className="title-gradient">
-              ANTIGRAVITY JOURNAL
-            </h2>
-          </div>
-
-          {/* Navigation Links */}
-          <div style={{ display: "flex", flexDirection: "column", gap: "8px" }}>
-            <button
-              className={`btn-secondary`}
-              style={{
-                display: "flex",
-                alignItems: "center",
-                gap: "12px",
-                textAlign: "left",
-                justifyContent: "flex-start",
-                borderColor: activeTab === "dashboard" ? "var(--accent-blue)" : "transparent",
-                background: activeTab === "dashboard" ? "var(--accent-bg)" : "transparent"
-              }}
-              onClick={() => setActiveTab("dashboard")}
-            >
-              <TrendingUp size={18} />
-              Performance Dashboard
-            </button>
-
-            <button
-              className={`btn-secondary`}
-              style={{
-                display: "flex",
-                alignItems: "center",
-                gap: "12px",
-                textAlign: "left",
-                justifyContent: "flex-start",
-                borderColor: activeTab === "charts" ? "var(--accent-blue)" : "transparent",
-                background: activeTab === "charts" ? "var(--accent-bg)" : "transparent"
-              }}
-              onClick={() => setActiveTab("charts")}
-            >
-              <BarChart3 size={18} />
-              Equity & Analytics
-            </button>
-
-            <button
-              className={`btn-secondary`}
-              style={{
-                display: "flex",
-                alignItems: "center",
-                gap: "12px",
-                textAlign: "left",
-                justifyContent: "flex-start",
-                borderColor: activeTab === "calendar" ? "var(--accent-blue)" : "transparent",
-                background: activeTab === "calendar" ? "var(--accent-bg)" : "transparent"
-              }}
-              onClick={() => setActiveTab("calendar")}
-            >
-              <CalendarIcon size={18} />
-              Calendar Grid
-            </button>
-
-            <button
-              className={`btn-secondary`}
-              style={{
-                display: "flex",
-                alignItems: "center",
-                gap: "12px",
-                textAlign: "left",
-                justifyContent: "flex-start",
-                borderColor: activeTab === "coach" ? "var(--accent-blue)" : "transparent",
-                background: activeTab === "coach" ? "var(--accent-bg)" : "transparent"
-              }}
-              onClick={() => setActiveTab("coach")}
-            >
-              <Brain size={18} />
-              AI Quant Coach
-            </button>
-
-            <button
-              className={`btn-secondary`}
-              style={{
-                display: "flex",
-                alignItems: "center",
-                gap: "12px",
-                textAlign: "left",
-                justifyContent: "flex-start",
-                borderColor: activeTab === "playbooks" ? "var(--accent-blue)" : "transparent",
-                background: activeTab === "playbooks" ? "var(--accent-bg)" : "transparent"
-              }}
-              onClick={() => setActiveTab("playbooks")}
-            >
-              <BookOpen size={18} />
-              Playbooks & Audits
-            </button>
-
-            <button
-              className={`btn-secondary`}
-              style={{
-                display: "flex",
-                alignItems: "center",
-                gap: "12px",
-                textAlign: "left",
-                justifyContent: "flex-start",
-                borderColor: activeTab === "replay" ? "var(--accent-blue)" : "transparent",
-                background: activeTab === "replay" ? "var(--accent-bg)" : "transparent"
-              }}
-              onClick={() => {
-                if (trades.filter(t => t.executions.length >= 2).length === 0) {
-                  alert("No trades with multiple entry/exit executions logged yet. Add some executions first!");
-                  return;
-                }
-                const firstReplayable = trades.find(t => t.executions.length >= 2);
-                if (firstReplayable) setSelectedTrade(firstReplayable);
-                setActiveTab("replay");
-              }}
-            >
-              <Play size={18} />
-              Trade Execution Replay
-            </button>
-
-            <button
-              className={`btn-secondary`}
-              style={{
-                display: "flex",
-                alignItems: "center",
-                gap: "12px",
-                textAlign: "left",
-                justifyContent: "flex-start",
-                borderColor: activeTab === "settings" ? "var(--accent-blue)" : "transparent",
-                background: activeTab === "settings" ? "var(--accent-bg)" : "transparent"
-              }}
-              onClick={() => setActiveTab("settings")}
-            >
-              <SettingsIcon size={18} />
-              Settings
-            </button>
-          </div>
+    <div style={{ height: "100vh", display: "flex", color: "var(--text-primary)", background: "var(--bg-primary)", overflow: "hidden" }}>
+      
+      {/* Fallback Hamburger Menu */}
+      {isMenuOpen && (
+        <div style={{ position: "absolute", top: 60, left: 20, background: "var(--bg-secondary)", border: "1px solid var(--border-color)", borderRadius: "8px", padding: "10px", zIndex: 1000, display: "flex", flexDirection: "column", gap: "8px" }}>
+           <button className="btn-secondary" onClick={() => { setActiveCanvasComponent("Dashboard"); setIsMenuOpen(false); }}>Dashboard</button>
+           <button className="btn-secondary" onClick={() => { setActiveCanvasComponent("PerformanceCharts"); setIsMenuOpen(false); }}>Charts</button>
+           <button className="btn-secondary" onClick={() => { setActiveCanvasComponent("Calendar"); setIsMenuOpen(false); }}>Calendar</button>
+           <button className="btn-secondary" onClick={() => { setActiveCanvasComponent("Playbooks"); setIsMenuOpen(false); }}>Playbooks</button>
+           <button className="btn-secondary" onClick={() => { setActiveCanvasComponent("TrainingDojo"); setIsMenuOpen(false); }}>Training Dojo</button>
+           <button className="btn-secondary" onClick={() => { setActiveCanvasComponent("Settings"); setIsMenuOpen(false); }}>Settings</button>
         </div>
+      )}
 
-        {/* Sync status widget */}
-        <div style={{ display: "flex", flexDirection: "column", gap: "8px" }}>
-          <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: "8px", fontSize: "0.75rem", color: "var(--text-secondary)" }}>
-            <span style={{
-              width: "8px",
-              height: "8px",
-              borderRadius: "50%",
-              backgroundColor: wsStatus === "connected" ? "var(--accent-green)" : "var(--accent-red)",
-              display: "inline-block"
-            }} />
-            <span>Feed: {wsStatus === "connected" ? "Sync Active" : "Offline"}</span>
-          </div>
-          <button 
-            className="btn-secondary" 
-            style={{ padding: "6px", fontSize: "0.75rem", display: "flex", alignItems: "center", justifyContent: "center", gap: "6px" }}
-            onClick={loadDashboardData}
-          >
-            <RefreshCw size={12} />
-            Force Refresh Sync
-          </button>
-        </div>
-      </div>
-
-      {/* Main Panel Content */}
-      <div style={{ flex: 1, display: "flex", flexDirection: "column", background: "var(--bg-primary)" }}>
-        {/* Header bar */}
-        <header 
-          style={{ 
-            height: "70px", 
-            borderBottom: "1px solid var(--border-color)", 
-            display: "flex", 
-            justifyContent: "space-between", 
-            alignItems: "center", 
-            padding: "0 30px" 
-          }}
-        >
-          <div style={{ display: "flex", alignItems: "center", gap: "10px" }}>
-            <span style={{ fontSize: "0.85rem", color: "var(--text-secondary)" }}>Market State:</span>
-            <button
-              className="glow-effect"
-              onClick={() => setShowMarketAnalysis(true)}
+      <AppLayout
+        viewMode={viewMode}
+        splitPercent={splitPercent}
+        onSplitChange={handleSplitChange}
+        leftPane={
+          <>
+            {/* Antigravity header bar */}
+            <div style={{ padding: "15px 20px", display: "flex", alignItems: "center", gap: "10px", borderBottom: "1px solid var(--border-color)", flexShrink: 0 }}>
+              <button style={{ background: "transparent", border: "none", color: "var(--text-secondary)", cursor: "pointer", padding: "4px" }} onClick={() => setIsMenuOpen(!isMenuOpen)}>
+                <Activity style={{ color: "var(--accent-blue)" }} size={24} />
+              </button>
+              {viewMode !== "minimized" && (
+                <h2 style={{ fontSize: "1.1rem", fontWeight: "bold" }} className="title-gradient">
+                  ANTIGRAVITY OS
+                </h2>
+              )}
+            </div>
+            <div style={{ flex: 1, overflow: "hidden" }}>
+              <AICoach 
+                accountId={accountId} 
+                onRefreshTrades={loadDashboardData} 
+                initialPrompt={coachInitialPrompt}
+                trades={trades}
+                initialBalance={accountBalance}
+                onMountWidget={(componentName) => setActiveCanvasComponent(componentName)}
+                onToggleEngine={setMatchingEngine}
+                onPaneModeChange={handleModeChange}
+                paneMode={viewMode}
+              />
+            </div>
+          </>
+        }
+        rightPane={
+          <>
+            {/* Header bar */}
+            <header 
               style={{ 
-                padding: "4px 10px", 
-                borderRadius: "16px", 
-                fontSize: "0.75rem", 
-                fontWeight: "600",
-                background: "var(--accent-bg)",
-                border: "1px solid var(--accent-blue)",
-                color: "var(--accent-blue)",
-                cursor: "pointer",
-                display: "flex",
-                alignItems: "center",
-                gap: "6px",
+                height: "60px", 
+                borderBottom: "1px solid var(--border-color)", 
+                display: "flex", 
+                justifyContent: "space-between", 
+                alignItems: "center", 
+                padding: "0 20px"
               }}
             >
-              {marketRegime.regime_type || "Unknown"}
-              <span style={{ fontSize: "0.6rem", opacity: 0.6 }}>inspect</span>
-            </button>
-          </div>
+              <div style={{ display: "flex", alignItems: "center", gap: "20px" }}>
+                {/* LENS TOGGLE */}
+                <div style={{ display: "flex", background: "var(--bg-secondary)", borderRadius: "20px", padding: "4px", border: "1px solid var(--border-color)" }}>
+                  <button 
+                    onClick={() => setMatchingEngine("FIFO")}
+                    style={{
+                      padding: "4px 12px", borderRadius: "16px", border: "none", fontSize: "0.75rem", fontWeight: "600", cursor: "pointer",
+                      background: matchingEngine === "FIFO" ? "var(--accent-bg-strong)" : "transparent",
+                      color: matchingEngine === "FIFO" ? "var(--accent-blue)" : "var(--text-secondary)",
+                      transition: "all 0.2s"
+                    }}
+                  >
+                    Net Session
+                  </button>
+                  <button 
+                    onClick={() => setMatchingEngine("LIFO")}
+                    style={{
+                      padding: "4px 12px", borderRadius: "16px", border: "none", fontSize: "0.75rem", fontWeight: "600", cursor: "pointer",
+                      background: matchingEngine === "LIFO" ? "var(--accent-bg-strong)" : "transparent",
+                      color: matchingEngine === "LIFO" ? "var(--accent-blue)" : "var(--text-secondary)",
+                      transition: "all 0.2s"
+                    }}
+                  >
+                    Execution Edge
+                  </button>
+                </div>
 
-          <div style={{ fontSize: "0.85rem", color: "var(--text-secondary)" }}>
-            Account Net Equity: <strong style={{ color: "var(--text-primary)" }}>${(accountBalance + trades.reduce((acc, t) => acc + Number(t.net_pnl), 0)).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</strong>
-          </div>
-        </header>
+                <div style={{ display: "flex", alignItems: "center", gap: "10px" }}>
+                  <span style={{ fontSize: "0.85rem", color: "var(--text-secondary)" }}>Market State:</span>
+              <button
+                className="glow-effect"
+                onClick={() => setShowMarketAnalysis(true)}
+                style={{ 
+                  padding: "4px 10px", 
+                  borderRadius: "16px", 
+                  fontSize: "0.75rem", 
+                  fontWeight: "600",
+                  background: "var(--accent-bg)",
+                  border: "1px solid var(--accent-blue)",
+                  color: "var(--accent-blue)",
+                  cursor: "pointer",
+                  display: "flex",
+                  alignItems: "center",
+                  gap: "6px",
+                }}
+              >
+                {marketRegime.regime_type || "Unknown"}
+              </button>
+            </div>
+              </div>
 
-        {/* Content Area viewport */}
-        <main style={{ padding: "30px", overflowY: "auto", flex: 1 }}>
-          {activeTab === "dashboard" && (
-            <Dashboard 
-              accountId={accountId} 
-              trades={trades} 
-              stats={stats} 
-              initialBalance={accountBalance}
-              onRefresh={loadDashboardData}
-              onSelectTradeForReplay={handleSelectTradeForReplay}
-              onSetActiveTab={setActiveTab}
-            />
-          )}
+              <div style={{ display: "flex", alignItems: "center", gap: "15px", fontSize: "0.85rem", color: "var(--text-secondary)" }}>
+                <div style={{ display: "flex", alignItems: "center", gap: "6px" }}>
+                  <span style={{
+                    width: "8px",
+                    height: "8px",
+                    borderRadius: "50%",
+                    backgroundColor: wsStatus === "connected" ? "var(--accent-green)" : "var(--accent-red)",
+                    display: "inline-block"
+                  }} />
+                  <span>{wsStatus === "connected" ? "Sync Active" : "Offline"}</span>
+                </div>
+                <span>
+                  Net Equity: <strong style={{ color: "var(--text-primary)" }}>${(accountBalance + trades.reduce((acc, t) => acc + Number(t.net_pnl), 0)).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</strong>
+                </span>
+              </div>
+            </header>
 
-          {activeTab === "charts" && (
-            <PerformanceCharts trades={trades} initialBalance={accountBalance} />
-          )}
+            {/* Content Area viewport */}
+            <main className="canvas-pane-animation" style={{ padding: "20px", overflowY: "auto", flex: 1 }}>
+              {activeCanvasComponent === "Dashboard" && (
+                <Dashboard 
+                  accountId={accountId} 
+                  trades={trades} 
+                  stats={stats} 
+                  initialBalance={accountBalance}
+                  onRefresh={loadDashboardData}
+                  onSelectTradeForReplay={handleSelectTradeForReplay}
+                  onSetActiveTab={(tab) => setActiveCanvasComponent(tab === "dashboard" ? "Dashboard" : tab === "charts" ? "PerformanceCharts" : tab === "calendar" ? "Calendar" : tab === "playbooks" ? "Playbooks" : "Dashboard")}
+                  onDiscussTrade={handleDiscussTrade}
+                />
+              )}
 
-          {activeTab === "calendar" && (
-            <CalendarView trades={trades} accountId={accountId} />
-          )}
+              {(activeCanvasComponent === "PerformanceCharts" || activeCanvasComponent === "DrawdownChart" || activeCanvasComponent === "TimeOfDayChart") && (
+                <PerformanceCharts trades={trades} initialBalance={accountBalance} onDiscussChart={handleDiscussChart} />
+              )}
 
-          {activeTab === "replay" && selectedTrade && (
-            <TradeReplay key={selectedTrade.trade_id} trade={selectedTrade} />
-          )}
+              {activeCanvasComponent === "Calendar" && (
+                <CalendarView trades={trades} accountId={accountId} />
+              )}
 
-          {activeTab === "coach" && (
-            <AICoach accountId={accountId} onRefreshTrades={loadDashboardData} />
-          )}
+              {activeCanvasComponent === "TradeReplay" && selectedTrade && (
+                <TradeReplay key={selectedTrade.trade_id} trade={selectedTrade} />
+              )}
 
-          {activeTab === "playbooks" && (
-            <Playbooks 
-              accountId={accountId} 
-              trades={trades} 
-              onRefreshTrades={loadDashboardData} 
-            />
-          )}
+              {activeCanvasComponent === "Playbooks" && (
+                <Playbooks 
+                  accountId={accountId} 
+                  trades={trades} 
+                  onRefreshTrades={loadDashboardData} 
+                />
+              )}
 
-          {activeTab === "settings" && (
-            <Settings 
-              accountId={accountId} 
-              onAccountUpdated={() => {
-                loadAccount();
-                loadDashboardData();
-              }} 
-            />
-          )}
-        </main>
-      </div>
+              {activeCanvasComponent === "TrainingDojo" && (
+                <TrainingDojo />
+              )}
+
+              {activeCanvasComponent === "Settings" && (
+                <Settings 
+                  accountId={accountId} 
+                  onAccountUpdated={() => {
+                    loadAccount();
+                    loadDashboardData();
+                  }} 
+                />
+              )}
+            </main>
+          </>
+        }
+      />
       {showMarketAnalysis && (
         <MarketAnalysis regime={marketRegime} onClose={() => setShowMarketAnalysis(false)} />
       )}
