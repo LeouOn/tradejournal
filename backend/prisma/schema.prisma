@@ -18,17 +18,19 @@ model User {
 }
 
 model Account {
-  account_id      String   @id @default(uuid())
-  account_name    String
-  broker_name     String
-  initial_balance Decimal
-  currency        String   @default("USD")
-  user_id         String
-  user            User     @relation(fields: [user_id], references: [user_id], onDelete: Cascade)
-  trades          Trade[]
-  chat_messages   ChatMessage[]
-  daily_charts    DailyChart[]
-  weekly_reports  WeeklyReport[]
+  account_id         String             @id @default(uuid())
+  account_name       String
+  broker_name        String
+  initial_balance    Decimal
+  currency           String             @default("USD")
+  user_id            String
+  user               User               @relation(fields: [user_id], references: [user_id], onDelete: Cascade)
+  trades             Trade[]
+  chat_messages      ChatMessage[]
+  chat_sessions      ChatSession[]
+  daily_charts       DailyChart[]
+  weekly_reports     WeeklyReport[]
+  coach_observations CoachObservation[]
 }
 
 model Trade {
@@ -41,8 +43,8 @@ model Trade {
   duration       Int             @default(0) // In seconds
   rules_followed Boolean         @default(true)
   stop_loss      Decimal?
-  notes          String?         
-  notes_vector   String?         // Comma-separated floats representing embeddings
+  notes          String?
+  notes_vector   String? // Comma-separated floats representing embeddings
   bias           String          @default("RANGE") // LONG, SHORT, RANGE
   bias_reversal  Boolean         @default(false)
   trade_type     String          @default("BREAKOUT") // BREAKOUT, RANGE
@@ -58,7 +60,7 @@ model Execution {
   execution_id        String   @id @default(uuid())
   fill_price          Decimal
   quantity            Decimal
-  side                String   // BUY, SELL
+  side                String // BUY, SELL
   execution_timestamp DateTime
   trade_id            String
   trade               Trade    @relation(fields: [trade_id], references: [trade_id], onDelete: Cascade)
@@ -66,7 +68,7 @@ model Execution {
 
 model Tag {
   tag_id       String     @id @default(uuid())
-  tag_category String     // Setup, Emotion, Error
+  tag_category String // Setup, Emotion, Error
   tag_name     String     @unique
   color_code   String
   trade_tags   TradeTag[]
@@ -83,38 +85,54 @@ model TradeTag {
 }
 
 model Playbook {
-  playbook_id String @id @default(uuid())
-  setup_name  String
-  description String
+  playbook_id  String @id @default(uuid())
+  setup_name   String
+  description  String
   ruleset_json String // JSON string representation of edge guidelines
-  user_id     String
-  user        User   @relation(fields: [user_id], references: [user_id], onDelete: Cascade)
+  user_id      String
+  user         User   @relation(fields: [user_id], references: [user_id], onDelete: Cascade)
 }
 
 model MarketContext {
-  context_id      String  @id @default(uuid())
-  regime_type     String  // e.g., "Bullish - Low Volatility"
-  vix_level       Decimal
-  fed_funds_rate  Decimal
-  spx_trend       String  // e.g., "ABOVE_200SMA", "BELOW_200SMA"
-  trade_id        String
-  trade           Trade   @relation(fields: [trade_id], references: [trade_id], onDelete: Cascade)
+  context_id     String  @id @default(uuid())
+  regime_type    String // e.g., "Bullish - Low Volatility"
+  vix_level      Decimal
+  fed_funds_rate Decimal
+  spx_trend      String // e.g., "ABOVE_200SMA", "BELOW_200SMA"
+  trade_id       String
+  trade          Trade   @relation(fields: [trade_id], references: [trade_id], onDelete: Cascade)
+}
+
+model ChatSession {
+  session_id String        @id @default(uuid())
+  title      String
+  account_id String
+  account    Account       @relation(fields: [account_id], references: [account_id], onDelete: Cascade)
+  messages   ChatMessage[]
+  created_at DateTime      @default(now())
+  updated_at DateTime      @updatedAt
+
+  @@index([account_id])
 }
 
 model ChatMessage {
-  message_id String   @id @default(uuid())
-  role       String   // "user", "assistant"
-  content    String
-  image_data String?
-  created_at DateTime @default(now())
-  account_id String
-  account    Account  @relation(fields: [account_id], references: [account_id], onDelete: Cascade)
+  message_id  String       @id @default(uuid())
+  role        String // "user", "assistant"
+  content     String
+  image_data  String?
+  is_summary  Boolean      @default(false)
+  is_archived Boolean      @default(false)
+  created_at  DateTime     @default(now())
+  account_id  String
+  account     Account      @relation(fields: [account_id], references: [account_id], onDelete: Cascade)
+  session_id  String?
+  session     ChatSession? @relation(fields: [session_id], references: [session_id], onDelete: SetNull)
 }
 
 model DailyChart {
   chart_id   String   @id @default(uuid())
-  date_str   String   // The date string, e.g. "5-26-2026"
-  image_path String   // The path where the uploaded image is saved on the backend server
+  date_str   String // The date string, e.g. "5-26-2026"
+  image_path String // The path where the uploaded image is saved on the backend server
   account_id String
   account    Account  @relation(fields: [account_id], references: [account_id], onDelete: Cascade)
   created_at DateTime @default(now())
@@ -128,4 +146,16 @@ model WeeklyReport {
   account_id String
   account    Account  @relation(fields: [account_id], references: [account_id], onDelete: Cascade)
   created_at DateTime @default(now())
+}
+
+model CoachObservation {
+  observation_id   String   @id @default(uuid())
+  account_id       String
+  observation_type String // "QUALITATIVE", "QUANTITATIVE", "RULE_VIOLATION"
+  content          String
+  severity         Int      @default(1) // 1-5 scale
+  related_trade_id String?
+  created_at       DateTime @default(now())
+
+  account Account @relation(fields: [account_id], references: [account_id], onDelete: Cascade)
 }
