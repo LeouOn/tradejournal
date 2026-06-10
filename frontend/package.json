@@ -7,13 +7,15 @@
     "dev": "vite",
     "build": "tsc -b && vite build",
     "lint": "eslint .",
-    "preview": "vite preview"
+    "preview": "vite preview",
+    "test": "vitest run"
   },
   "dependencies": {
+    "lightweight-charts": "^5.2.0",
+    "lucide-react": "^0.378.0",
     "react": "^19.2.6",
     "react-dom": "^19.2.6",
-    "recharts": "^2.12.7",
-    "lucide-react": "^0.378.0"
+    "recharts": "^2.12.7"
   },
   "devDependencies": {
     "@eslint/js": "^10.0.1",
@@ -27,6 +29,7 @@
     "globals": "^17.6.0",
     "typescript": "~6.0.2",
     "typescript-eslint": "^8.59.2",
-    "vite": "^8.0.12"
+    "vite": "^8.0.12",
+    "vitest": "^4.1.8"
   }
 }
