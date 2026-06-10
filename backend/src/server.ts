@@ -930,7 +930,7 @@ app.post("/api/ai/models/unload", (req, res) => {
  * ----------------------------------------------------
  */
 app.post("/api/ai/coach", async (req, res) => {
-  const { accountId, query, reconciliationReport, model, image, systemPrompt, historyLimit, sessionId } = req.body;
+  const { accountId, query, reconciliationReport, model, image, systemPrompt, historyLimit, sessionId, context } = req.body;
 
   if (!accountId || !query) {
     return res.status(400).json({ error: "accountId and query parameters are required" });
@@ -977,6 +977,14 @@ app.post("/api/ai/coach", async (req, res) => {
   res.write(`data: ${JSON.stringify({ user_message_id: userMsgId, session_id: resolvedSessionId })}\n\n`);
 
   try {
+    const contextFlags = context && typeof context === "object"
+      ? {
+          recentTrades: Boolean(context.recentTrades),
+          performanceStats: Boolean(context.performanceStats),
+          playbookRules: Boolean(context.playbookRules),
+        }
+      : null;
+
     await streamAICoach(
       String(accountId),
       String(query),
@@ -985,6 +993,7 @@ app.post("/api/ai/coach", async (req, res) => {
       image ? String(image) : null,
       systemPrompt ? String(systemPrompt) : null,
       historyLimit ? Number(historyLimit) : 20,
+      contextFlags,
       (token) => {
         // Send SSE message block
         res.write(`data: ${JSON.stringify({ token })}\n\n`);

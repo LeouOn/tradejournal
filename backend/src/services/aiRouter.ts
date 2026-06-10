@@ -3,6 +3,7 @@ import { PrismaClient } from "@prisma/client";
 import dotenv from "dotenv";
 import { calculateMetrics } from "../utils/metrics";
 import { updateTradeCalculations } from "../server";
+import { applyLIFOMatching } from "../utils/matchingEngines";
 
 dotenv.config();
 
@@ -138,8 +139,13 @@ async function buildRAGContext(accountId: string, userQuery: string): Promise<RA
     include: { executions: true, trade_tags: { include: { tag: true } }, market_context: true },
   });
 
-  // Calculate quantitative stats
+  // Calculate quantitative stats (FIFO default)
   const metrics = calculateMetrics(dbTrades, Number(account.initial_balance));
+
+  // Calculate LIFO stats
+  const allExecutions = dbTrades.flatMap(t => t.executions).sort((a, b) => a.execution_timestamp.getTime() - b.execution_timestamp.getTime());
+  const lifoTrades = applyLIFOMatching(allExecutions, accountId);
+  const lifoMetrics = calculateMetrics(lifoTrades as any, Number(account.initial_balance));
 
   // Build weekday metrics
   const dayStats: { [key: string]: { trades: number; pnl: number } } = {
@@ -182,6 +188,11 @@ Performance by Day of Week:
 - Wednesday: ${dayStats["Wednesday"].trades} trades, Net P&L: $${dayStats["Wednesday"].pnl.toFixed(2)}
 - Thursday: ${dayStats["Thursday"].trades} trades, Net P&L: $${dayStats["Thursday"].pnl.toFixed(2)}
 - Friday: ${dayStats["Friday"].trades} trades, Net P&L: $${dayStats["Friday"].pnl.toFixed(2)}
+
+--- LIFO MICRO-SCALP ENGINE (Alternative View) ---
+Total Closed Scalps: ${lifoMetrics.totalTrades}
+Win Rate: ${(lifoMetrics.winRate * 100).toFixed(1)}%
+Profit Factor: ${lifoMetrics.profitFactor.toFixed(2)}
 `;
 
   // 2. Perform semantic search over qualitative notes
@@ -271,7 +282,75 @@ const logTradeTool = {
   }
 };
 
-async function executeLogTrade(accountId: string, args: any) {
+const renderUiTool = {
+  type: "function" as const,
+  function: {
+    name: "render_ui",
+    description: "Renders an interactive UI component in the chat. Use this when the user asks to see their dashboard, charts, calendar, or specific stats.",
+    parameters: {
+      type: "object",
+      properties: {
+        component: { 
+          type: "string", 
+          enum: ["Dashboard", "PerformanceCharts", "Calendar", "Playbooks", "DrawdownChart", "TimeOfDayChart"],
+          description: "The UI component to render" 
+        }
+      },
+      required: ["component"]
+    }
+  }
+};
+
+const recordObservationTool = {
+  type: "function" as const,
+  function: {
+    name: "record_observation",
+    description: "Permanently record a qualitative, quantitative, or rule-violation observation to your database so you don't forget it. Use this when you identify a leak or behavior.",
+    parameters: {
+      type: "object",
+      properties: {
+        type: { type: "string", enum: ["QUALITATIVE", "QUANTITATIVE", "RULE_VIOLATION"] },
+        content: { type: "string", description: "The insight or observation" },
+        severity: { type: "number", description: "Severity 1-5" },
+        related_trade_id: { type: "string", description: "Optional trade UUID if it applies to a specific trade" }
+      },
+      required: ["type", "content", "severity"]
+    }
+  }
+};
+
+const tagTradeTool = {
+  type: "function" as const,
+  function: {
+    name: "tag_trade",
+    description: "Add tags to a specific historical trade.",
+    parameters: {
+      type: "object",
+      properties: {
+        trade_id: { type: "string" },
+        new_tags: { type: "array", items: { type: "string" } }
+      },
+      required: ["trade_id", "new_tags"]
+    }
+  }
+};
+
+const toggleLensTool = {
+  type: "function" as const,
+  function: {
+    name: "toggle_lens",
+    description: "Toggles the user's UI between the Net Session (FIFO) view and the Execution Edge (LIFO) view. Use this when the user asks to switch views.",
+    parameters: {
+      type: "object",
+      properties: {
+        engine: { type: "string", enum: ["FIFO", "LIFO"], description: "The matching engine to use" }
+      },
+      required: ["engine"]
+    }
+  }
+};
+
+export async function executeLogTrade(accountId: string, args: any) {
   // 1. Generate embedding for notes
   let embeddingStr: string | null = null;
   if (args.notes && args.notes.trim() !== "") {
@@ -361,6 +440,136 @@ async function executeLogTrade(accountId: string, args: any) {
 }
 
 /**
+ * Context flags that control which sections are included in the system prompt.
+ */
+export interface ContextFlags {
+  recentTrades: boolean;
+  performanceStats: boolean;
+  playbookRules: boolean;
+}
+
+/**
+ * Fetches playbook rules for the given account's user.
+ * Returns empty string if no playbooks exist.
+ */
+export async function fetchPlaybookRules(accountId: string): Promise<string> {
+  try {
+    const account = await prisma.account.findUnique({
+      where: { account_id: accountId },
+    });
+    if (!account) return "";
+
+    const user = await prisma.user.findFirst({
+      where: { accounts: { some: { account_id: accountId } } },
+    });
+    if (!user) return "";
+
+    const playbooks = await prisma.playbook.findMany({
+      where: { user_id: user.user_id },
+    });
+
+    if (playbooks.length === 0) return "";
+
+    return playbooks
+      .map(
+        (pb, i) =>
+          `--- Playbook #${i + 1}: ${pb.setup_name} ---\nDescription: ${pb.description}\nRules: ${pb.ruleset_json}`
+      )
+      .join("\n\n");
+  } catch (e) {
+    console.warn("Failed to fetch playbook rules:", e);
+    return "";
+  }
+}
+
+/**
+ * Fetches the last N trades for context injection.
+ * Returns empty string if no trades exist.
+ */
+async function fetchRecentTrades(accountId: string, limit = 5): Promise<string> {
+  try {
+    const trades = await prisma.trade.findMany({
+      where: { account_id: accountId, status: "CLOSED" },
+      orderBy: { created_at: "desc" },
+      take: limit,
+      include: { executions: true, trade_tags: { include: { tag: true } } },
+    });
+
+    if (trades.length === 0) return "";
+
+    return trades
+      .map((t, i) => {
+        const side = t.executions.length > 0 ? t.executions[0].side : "N/A";
+        return `--- Recent Trade #${i + 1} ---\n` +
+          `Symbol: ${t.symbol} | P&L: $${Number(t.net_pnl).toFixed(2)} | R-Multiple: ${Number(t.r_multiple).toFixed(2)}R\n` +
+          `Side: ${side} | Status: ${t.status} | Rules Followed: ${t.rules_followed ? "Yes" : "No"}\n` +
+          `Tags: ${t.trade_tags.map((tt) => tt.tag.tag_name).join(", ") || "None"}\n` +
+          `Notes: ${t.notes || "None"}`;
+      })
+      .join("\n\n");
+  } catch (e) {
+    console.warn("Failed to fetch recent trades:", e);
+    return "";
+  }
+}
+
+/**
+ * Builds the context sections string for the system prompt based on flags.
+ * Exported for testing.
+ */
+export function buildContextSections(
+  statsText: string,
+  notesContext: string,
+  recentTradesContent: string,
+  playbookRulesContent: string,
+  flags: ContextFlags
+): string {
+  let sections = "";
+
+  // Performance Stats (always included by default — now toggleable)
+  if (flags.performanceStats) {
+    sections += `
+Below is the trader's statistics:
+==============================
+${statsText}
+==============================
+`;
+  }
+
+  // Journal notes context (always included — not toggleable)
+  sections += `
+Here are the most semantically relevant historical journal entries related to the trader's query:
+==============================
+${notesContext}
+==============================
+`;
+
+  // Recent Trades
+  if (flags.recentTrades && recentTradesContent) {
+    sections += `
+Here are the trader's recent trades for context:
+==============================
+Recent Trades Context:
+${recentTradesContent}
+==============================
+`;
+  }
+
+  // Playbook Rules
+  if (flags.playbookRules && playbookRulesContent) {
+    sections += `
+Here are the trader's playbook rules and edge guidelines:
+==============================
+Playbook Rules:
+${playbookRulesContent}
+==============================
+`;
+  }
+
+  return sections;
+}
+
+/**
  * Streams the response from the LLM endpoint for a coach query using SSE
  */
 export async function streamAICoach(
@@ -371,10 +580,15 @@ export async function streamAICoach(
   image: string | null,
   customSystemPrompt: string | null,
   historyLimit: number,
+  contextFlags: ContextFlags | null,
   onToken: (token: string) => void,
   onComplete: (fullText: string) => void
 ): Promise<void> {
   const { statsText, notesContext } = await buildRAGContext(accountId, userQuery);
+  const flags: ContextFlags = contextFlags || { recentTrades: true, performanceStats: true, playbookRules: true };
+
+  const recentTradesContent = flags.recentTrades ? await fetchRecentTrades(accountId) : "";
+  const playbookRulesContent = flags.playbookRules ? await fetchPlaybookRules(accountId) : "";
 
   let reconciliationReportText = "No statement reconciliation report provided.";
   if (reconciliationReportJson) {
@@ -455,38 +669,40 @@ ${orphanText}
   const existingTags = await prisma.tag.findMany();
   const existingTagsList = existingTags.map(t => t.tag_name).join(", ");
 
+  const contextSections = buildContextSections(
+    statsText,
+    notesContext,
+    recentTradesContent,
+    playbookRulesContent,
+    flags
+  );
+
   let systemPrompt = `
 You are the "Antigravity Quantitative Trading Coach", an elite AI-driven performance auditor.
 Your goal is to help the trader build their statistical edge, eliminate behavioral biases (like loss aversion, FOMO, and revenge trading), and enforce mathematical discipline.
 
 When the user asks you to log trades from a statement or paste, analyze the execution history chronologically. Identify each distinct flat-to-flat sequence (where the net position starts at zero, scales in/out, and returns to zero). Log each distinct trade by making a separate, parallel call to the log_trade tool. Extract executions in chronological order for each trade. If a single execution has multiple contracts or represents a scaling entry/exit, preserve it in the corresponding trade.
+
 Available tags in the database: [${existingTagsList || "None"}]. Use these tags if appropriate, or create new short, descriptive tags if a new concept is introduced (like "Wash", "Runner Stopped").
 
 Structure your analysis with these principles:
 1. Ground your observations strictly in the provided mathematical statistics (Win Rate, Profit Factor, Expectancy, and Cost of Indiscipline).
 2. Synthesize these numbers with the qualitative journal notes retrieved via semantic search.
 3. Highlight the "Cost of Indiscipline" if they are losing money on rule breaches.
-4. If a Statement Ingestion/Reconciliation Report is provided, run a comparative audit:
+4. Keep the Context Clean: If the user pastes a massive list of executions or the chat feels long, strongly recommend that they click the "Compress History" button or ask you to "compress history" so you can summarize the session and maintain lightning-fast response times.
+5. If a Statement Ingestion/Reconciliation Report is provided, run a comparative audit:
    - Identify discrepancies between their subjective manual logs and objective broker executions (e.g. ghost trades, orphan trades, or negative slippage).
    - Address Ghost Trades: Why did they trade without journaling? Was it FOMO, impulsive, or revenge trading?
    - Address Slippage: Are they executing poor fills, chasing price, or ignoring limits?
    - Address Orphan Trades: Did they log a trade that never filled? Did they manifest a trade or fail to execute?
-5. Keep your tone direct, professional, and diagnostic.
-6. Provide actionable, mathematical adjustments (e.g., "reduce sizing on Friday mornings by 50%").
+6. Keep your tone direct, professional, and diagnostic.
+7. Provide actionable, mathematical adjustments (e.g., "reduce sizing on Friday mornings by 50%").
 
-Below is the trader's statistics:
-==============================
-${statsText}
-==============================
+${contextSections}
 
 Here is the daily statement reconciliation report:
 ==============================
 ${reconciliationReportText}
-==============================
-
-Here are the most semantically relevant historical journal entries related to the trader's query:
-==============================
-${notesContext}
 ==============================
 `;
 
@@ -497,25 +713,40 @@ ${notesContext}
   // Fetch chat history from DB
   let chatHistory: any[] = [];
   try {
+    // Always fetch all active summaries
+    const summaries = await prisma.chatMessage.findMany({
+      where: { account_id: accountId, is_summary: true },
+      orderBy: { created_at: "asc" }
+    });
+    
+    // Fetch recent unarchived normal chats
     const pastChats = await prisma.chatMessage.findMany({
-      where: { account_id: accountId },
+      where: { account_id: accountId, is_archived: false, is_summary: false },
       orderBy: { created_at: "desc" },
       take: historyLimit,
     });
-    // Reverse because we queried descending to get recent, but LLM expects chronological
-    chatHistory = pastChats.reverse().map(c => {
+    
+    const combinedChats = [...summaries, ...pastChats.reverse()].sort((a, b) => a.created_at.getTime() - b.created_at.getTime());
+
+    chatHistory = combinedChats.map(c => {
+      let contentText = c.content;
+      // Truncate large raw trade statements in history for performance optimization, but preserve summaries
+      if (!c.is_summary && contentText.length > 300 && (contentText.includes("MNQ") || contentText.includes("BOUGHT") || contentText.includes("SOLD") || contentText.includes("BOT") || contentText.includes("SLD"))) {
+        contentText = "[Large statement/execution data omitted to preserve context speed. The trades were already logged.]";
+      }
+
       if (c.image_data) {
         return {
           role: c.role as "user" | "assistant",
           content: [
-            { type: "text", text: c.content },
+            { type: "text", text: contentText },
             { type: "image_url", image_url: { url: c.image_data } }
           ]
         };
       }
       return {
         role: c.role as "user" | "assistant",
-        content: c.content
+        content: contentText
       };
     });
   } catch (e) {
@@ -541,7 +772,8 @@ ${notesContext}
       ],
       temperature: 0.3,
       stream: true,
-      tools: [logTradeTool],
+      tools: [logTradeTool, renderUiTool, recordObservationTool, tagTradeTool, toggleLensTool],
+      max_tokens: 8192,
     });
 
     let fullText = "";
@@ -555,6 +787,7 @@ ${notesContext}
     for await (const chunk of stream) {
       const delta = chunk.choices[0]?.delta;
       if (delta?.tool_calls && delta.tool_calls.length > 0) {
+        process.stdout.write("."); // Add progress dot for tool calls
         for (const tc of delta.tool_calls) {
           const idx = tc.index;
           if (idx === undefined) continue;
@@ -583,21 +816,90 @@ ${notesContext}
 
     for (const idx of sortedIndices) {
       const toolCall = toolCallsMap[idx];
-      if (toolCall.name === "log_trade" && toolCall.arguments) {
-        try {
-          const args = JSON.parse(toolCall.arguments);
-          await executeLogTrade(accountId, args);
-          const execsFormat = args.executions ? args.executions.map((e: any) => `${e.side} ${e.quantity} @ ${e.fill_price}`).join(", ") : "";
-          const tagsFormat = args.tags ? args.tags.join(", ") : "None";
-          const rulesMsg = args.rules_followed === false ? "⚠️ Nudge: Rules were broken." : "🏆 Celebrate: Disciplined execution!";
-          const msg = `\n\n✅ **Trade successfully logged!**\n- Symbol: ${args.symbol}\n- Executions: ${execsFormat}\n- Tags: ${tagsFormat}\n- ${rulesMsg}`;
-          fullText += msg;
-          onToken(msg);
-        } catch (err: any) {
-          const msg = `\n\n❌ **Failed to log trade via tool (Index ${idx}):** ${err.message}`;
-          fullText += msg;
-          onToken(msg);
+      if (!toolCall.arguments) continue;
+      
+      try {
+        const args = JSON.parse(toolCall.arguments);
+
+        switch (toolCall.name) {
+          case "log_trade":
+            await executeLogTrade(accountId, args);
+            const execsFormat = args.executions ? args.executions.map((e: any) => `${e.side} ${e.quantity} @ ${e.fill_price}`).join(", ") : "";
+            const tagsFormat = args.tags ? args.tags.join(", ") : "None";
+            const rulesMsg = args.rules_followed === false ? "⚠️ Nudge: Rules were broken." : "🎉 Celebrate: Disciplined execution!";
+            const msgTrade = `\n\n📌 **Trade successfully logged!**\n- Symbol: ${args.symbol}\n- Executions: ${execsFormat}\n- Tags: ${tagsFormat}\n- ${rulesMsg}`;
+            fullText += msgTrade;
+            onToken(msgTrade);
+            break;
+
+          case "render_ui":
+            const widgetMsg = `\n\n[WIDGET: {"component": "${args.component}"}]\n\n`;
+            fullText += widgetMsg;
+            onToken(widgetMsg);
+            break;
+
+          case "toggle_lens":
+            const toggleMsg = `\n\n[LENS_TOGGLE: {"engine": "${args.engine}"}]\n\n`;
+            fullText += toggleMsg;
+            onToken(toggleMsg);
+            break;
+
+          case "record_observation":
+            await prisma.coachObservation.create({
+              data: {
+                account_id: accountId,
+                observation_type: args.type,
+                content: args.content,
+                severity: args.severity,
+                related_trade_id: args.related_trade_id || null
+              }
+            });
+            const msgObs = `\n\n📝 **Observation Saved [${args.type} - Severity ${args.severity}]**: ${args.content}`;
+            fullText += msgObs;
+            onToken(msgObs);
+            break;
+
+          case "tag_trade":
+            // Fetch trade to ensure it exists
+            const trade = await prisma.trade.findUnique({ where: { trade_id: args.trade_id }, include: { trade_tags: true } });
+            if (trade && args.new_tags && Array.isArray(args.new_tags)) {
+              for (const tagName of args.new_tags) {
+                // Find or create tag
+                let tag = await prisma.tag.findUnique({ where: { tag_name: tagName } });
+                if (!tag) {
+                  tag = await prisma.tag.create({
+                    data: {
+                      tag_category: "AI_GENERATED",
+                      tag_name: tagName,
+                      color_code: "#4A90E2"
+                    }
+                  });
+                }
+                // Link tag to trade
+                const existing = trade.trade_tags.find((tt: any) => tt.tag_id === tag!.tag_id);
+                if (!existing) {
+                  await prisma.tradeTag.create({
+                    data: {
+                      trade_id: trade.trade_id,
+                      tag_id: tag.tag_id
+                    }
+                  });
+                }
+              }
+              const msgTag = `\n\n🏷️ **Trade Tagged**: ${args.new_tags.join(", ")}`;
+              fullText += msgTag;
+              onToken(msgTag);
+            }
+            break;
+
+          default:
+            console.warn("Unknown tool call executed:", toolCall.name);
+            break;
         }
+      } catch (err: any) {
+        const msgErr = `\n\n❌ **Failed to execute tool ${toolCall.name} (Index ${idx}):** ${err.message}`;
+        fullText += msgErr;
+        onToken(msgErr);
       }
     }
 
