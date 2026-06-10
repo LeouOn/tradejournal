@@ -1,9 +1,8 @@
 import React, { useState, useEffect } from "react";
 import { 
-  Award, Flame, EyeOff, Eye, Plus, Trash2, Play, MessageSquare
+  Award, Flame, EyeOff, Eye, Plus, Trash2, Play, Brain
 } from "lucide-react";
 import { useToast } from "../contexts/ToastContext";
-import AICoach from "./AICoach";
 
 interface Tag {
   tag_id: string;
@@ -71,6 +70,7 @@ interface DashboardProps {
   onRefresh: () => void;
   onSelectTradeForReplay: (trade: Trade) => void;
   onSetActiveTab: (tab: string) => void;
+  onDiscussTrade?: (trade: Trade) => void;
 }
 
 export default function Dashboard({
@@ -80,7 +80,8 @@ export default function Dashboard({
   initialBalance,
   onRefresh,
   onSelectTradeForReplay,
-  onSetActiveTab
+  onSetActiveTab,
+  onDiscussTrade
 }: DashboardProps) {
   const toast = useToast();
 
@@ -107,7 +108,7 @@ export default function Dashboard({
 
   // Manual Logger Form State
   const [isLoggingOpen, setIsLoggingOpen] = useState(false);
-  const [isAILoggingOpen, setIsAILoggingOpen] = useState(true);
+
   const [entryMode, setEntryMode] = useState<"quick" | "advanced">("quick");
   const [symbol, setSymbol] = useState("");
   const [initialRisk, setInitialRisk] = useState("100");
@@ -799,18 +800,11 @@ export default function Dashboard({
             <Play size={16} />
             Simulate Live Trade
           </button>
-          <button 
-            className="btn-primary" 
-            style={{ display: "flex", alignItems: "center", gap: "6px", backgroundColor: isAILoggingOpen ? "var(--accent-blue)" : "var(--bg-secondary)", color: isAILoggingOpen ? "#fff" : "var(--text-primary)" }}
-            onClick={() => { setIsAILoggingOpen(!isAILoggingOpen); setIsLoggingOpen(false); }}
-          >
-            <MessageSquare size={18} />
-            Log via AI
-          </button>
+
           <button 
             className="btn-primary" 
             style={{ display: "flex", alignItems: "center", gap: "6px", backgroundColor: isLoggingOpen ? "var(--accent-blue)" : "var(--bg-secondary)", color: isLoggingOpen ? "#fff" : "var(--text-primary)" }}
-            onClick={() => { setIsLoggingOpen(!isLoggingOpen); setIsAILoggingOpen(false); }}
+            onClick={() => { setIsLoggingOpen(!isLoggingOpen); }}
           >
             <Plus size={18} />
             Manual Entry
@@ -855,12 +849,7 @@ export default function Dashboard({
         );
       })()}
 
-      {/* AI Logger Panel */}
-      {isAILoggingOpen && (
-        <div style={{ marginBottom: "24px", border: "1px solid var(--border-color)", borderRadius: "12px", overflow: "hidden" }}>
-          <AICoach accountId={accountId} onRefreshTrades={onRefresh} compact={true} />
-        </div>
-      )}
+
 
       {/* Manual Logger Sliding/Toggled Panel */}
       {isLoggingOpen && (
@@ -1433,9 +1422,9 @@ export default function Dashboard({
                           <button
                             className="btn-secondary"
                             style={{ padding: "4px 8px", fontSize: "0.75rem", display: "flex", alignItems: "center", gap: "4px" }}
-                            onClick={() => onSetActiveTab("coach")}
+                            onClick={() => onDiscussTrade ? onDiscussTrade(t) : onSetActiveTab("coach")}
                           >
-                            <MessageSquare size={12} /> Coach
+                            <Brain size={12} style={{ color: "var(--accent-blue)" }} /> AI Review
                           </button>
                           <button
                             className="btn-secondary"

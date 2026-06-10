@@ -1,9 +1,5 @@
 import { useState, useEffect, useCallback } from "react";
-import { 
-  TrendingUp, BarChart3, Calendar as CalendarIcon, 
-  RefreshCw, Play, Brain, Activity, Settings as SettingsIcon,
-  BookOpen
-} from "lucide-react";
+import { Activity } from "lucide-react";
 import Dashboard from "./components/Dashboard";
 import type { Trade, Stats } from "./components/Dashboard";
 import PerformanceCharts from "./components/PerformanceCharts";
@@ -20,7 +16,7 @@ import { useSettings } from "./contexts/SettingsContext";
 import { useToast } from "./contexts/ToastContext";
 
 export default function App() {
-  const { settings } = useSettings();
+  useSettings();
   const toast = useToast();
   const [activeCanvasComponent, setActiveCanvasComponent] = useState<string>("Dashboard");
   const [matchingEngine, setMatchingEngine] = useState<"FIFO" | "LIFO">("FIFO");
