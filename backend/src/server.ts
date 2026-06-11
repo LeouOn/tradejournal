@@ -14,6 +14,7 @@ import {
   parseSimpleSplit,
   parseOrderIdFormat,
 } from "./utils/ironbeamParsers";
+import { preformatIronbeamFills } from "./utils/ironbeamPreformatter";
 import fs from "fs";
 import path from "path";
 import externalApiRouter, { setRegimeUpdater } from "./routes/externalApi";
@@ -1129,6 +1130,15 @@ function parseIronbeamFills(rawText: string): {
 }[] {
   const lines = rawText.split("\n");
 
+  // NEW: preformat first — normalize any column layout to canonical form
+  const preformatted = preformatIronbeamFills(rawText);
+  if (preformatted.rowCount > 0) {
+    const canonicalLines = preformatted.canonicalText.split("\n");
+    const parsed = parseOrderIdFormat(canonicalLines);
+    if (parsed.length > 0) return parsed;
+  }
+
+  // Fall through to existing 4 parsers unchanged
   let parsedExecutions = parsePrimaryRegex(lines);
 
   if (parsedExecutions.length === 0) {
