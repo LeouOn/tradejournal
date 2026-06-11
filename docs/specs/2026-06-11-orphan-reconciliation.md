@@ -1,8 +1,18 @@
-# AI Coach Orphan Reconciliation
+# AI Coach Trade Grouping & Orphan Reconciliation
 
 **Date:** 2026-06-11
 **Status:** Design — awaiting user approval
 **Author:** Sisyphus (with user)
+
+## Two related features, one workstream
+
+This spec covers two features that emerged from the same architectural shift: letting the AI Coach adjudicate judgment-heavy decisions about the user's trades via tool calls. Both replace rigid heuristic logic with LLM-driven discretion.
+
+1. **Trade grouping**: today, `ironbeam/sync` dumps all fills from a statement into one OPEN trade per symbol. After today's 54-fill session was synced, the user has 1 trade row instead of 9, which kills the per-trade behavioral analytics. The coach should propose groupings, the user confirms.
+
+2. **Orphan reconciliation**: today, the coach prompt *describes* orphans but provides no tool to resolve them. The user has 45+ orphans with no way to act on them through the coach. The LLM should decide drop/keep/ignore per orphan.
+
+Both follow the same pattern: pure-function helper + new tool + endpoint + system-prompt update + TDD.
 
 ## Problem
 
@@ -271,6 +281,236 @@ Integration test for the endpoint:
 - [ ] `prisma db push` succeeds with the new columns
 - [ ] Live test: paste yesterday's 22-fill statement into the analyzer, observe the 22 ghosts and 45 orphans in the response, type "reconcile my orphans" in the coach, observe the LLM call `reconcile_orphan` for each orphan, verify the DB changes
 
+---
+
+# Part 2: Coach-Driven Trade Grouping
+
+## Problem (continued)
+
+The current `ironbeam/sync` endpoint groups all fills from a single import into one `OPEN` Trade row per `(account_id, symbol)`. After syncing today's 54-fill statement, the user has 1 Trade row instead of the 9 flat-to-flat trades that the data actually contains. This destroys per-trade analytics: the user can't see "I had 9 trades, 7 winners, 2 losers" — they see "I had 1 trade, +$710."
+
+The grouping decision is judgment-heavy:
+- A scalper wants flat-to-flat: each completed round-trip is its own trade.
+- A position flipper wants session-based: a long → short → long all might be "one trading idea" worth tracking together.
+- A user might do 4 scalp-tries then a runner: should the runner be a separate trade or an extension of the scalps?
+
+A fixed heuristic can't tell. The LLM coach can — with the user's playbook, recent chat, and regime as context.
+
+## Goal
+
+Give the AI Coach a `group_into_trades` tool. When the user pastes a statement and says "group these into trades" (or just "apply" after the coach proactively proposes a grouping), the coach reads the fills, decides how to group them, and calls the tool with the proposed groups. The user reviews and confirms. **Default behavior when the user clicks Sync without consulting the coach is flat-to-flat** (per user preference).
+
+## Design
+
+### 1. New tool: `group_into_trades`
+
+```typescript
+{
+  type: "function" as const,
+  function: {
+    name: "group_into_trades",
+    description: "Propose a grouping of broker fills into discrete trades. Use this when the user pastes a statement and asks you to organize the fills. Each trade must be flat-to-flat: net position starts at zero, scales in/out, and returns to zero. Call this once per grouping proposal, then the user reviews and confirms.",
+    parameters: {
+      type: "object",
+      properties: {
+        account_id: { type: "string", description: "The account to create trades for" },
+        proposal: {
+          type: "array",
+          description: "Proposed trade groupings, in chronological order",
+          items: {
+            type: "object",
+            properties: {
+              symbol: { type: "string", description: "Base symbol (e.g. MNQ, NQ)" },
+              bias: { type: "string", enum: ["LONG", "SHORT", "RANGE"] },
+              executions: {
+                type: "array",
+                items: {
+                  type: "object",
+                  properties: {
+                    side: { type: "string", enum: ["BUY", "SELL"] },
+                    quantity: { type: "number" },
+                    fill_price: { type: "number" },
+                    execution_timestamp: { type: "string", description: "ISO timestamp" }
+                  },
+                  required: ["side", "quantity", "fill_price", "execution_timestamp"]
+                }
+              },
+              notes: { type: "string", description: "Optional one-line rationale" }
+            },
+            required: ["symbol", "bias", "executions"]
+          }
+        }
+      },
+      required: ["account_id", "proposal"]
+    }
+  }
+}
+```
+
+### 2. New helper: `applyTradeGrouping()`
+
+File: `backend/src/services/tradeGrouping.ts`. Pure-ish function with one Prisma dependency.
+
+```typescript
+export interface TradeGroup {
+  symbol: string;
+  bias: "LONG" | "SHORT" | "RANGE";
+  executions: Array<{
+    side: "BUY" | "SELL";
+    quantity: number;
+    fill_price: number;
+    execution_timestamp: string;
+  }>;
+  notes?: string;
+}
+
+export interface GroupingResult {
+  tradesCreated: Array<{ tradeId: string; bias: string; netPnl: number }>;
+  totalTrades: number;
+}
+
+export async function applyTradeGrouping(
+  prisma: PrismaClient,
+  accountId: string,
+  groups: TradeGroup[]
+): Promise<GroupingResult>
+```
+
+**Semantics per group:**
+
+1. Compute net position from `executions` (BUY adds, SELL subtracts). If non-zero at the end, reject the group (the coach must produce flat-to-flat groups).
+2. Compute bias from the first execution: first BUY → LONG, first SELL → SHORT.
+3. Compute P&L: for LONG, `(sum of SELL fill_price × qty - sum of BUY fill_price × qty) × symbol_multiplier`; for SHORT, the inverse.
+4. Create `Trade` row with `symbol`, `status: "CLOSED"`, `net_pnl`, `r_multiple: 0` (simplified for v1), `duration: 0`, `bias`, `manual_status: false`, `trade_type: "BREAKOUT"` (default), `account_id`, `created_at: first execution's timestamp`, `notes: groups[i].notes || "Auto-grouped by AI Coach"`.
+5. Create `Execution` rows linked to the trade.
+6. Create `MarketContext` row with the current regime state (consistent with `ironbeam/sync`).
+7. Optionally tag the trade with "AI Coach Grouped" so the user can find them later.
+
+**Symbol multiplier:** use `getSymbolMultiplier(symbol)` from `utils/multipliers`. The new helper that was fixed in Task 3 of the prior session.
+
+### 3. New endpoint: `POST /api/trades/group`
+
+```typescript
+app.post("/api/trades/group", async (req, res) => {
+  const { accountId, proposal } = req.body;
+  if (!accountId || !Array.isArray(proposal)) {
+    return res.status(400).json({ error: "accountId and proposal are required" });
+  }
+  try {
+    const result = await applyTradeGrouping(prisma, accountId, proposal);
+    res.json(result);
+  } catch (error: any) {
+    res.status(500).json({ error: error.message });
+  }
+});
+```
+
+### 4. Tool handler in `streamAICoach`
+
+In `aiRouter.ts`, the tool-call execution block (around line 850, where `log_trade`, `record_observation`, and `reconcile_orphan` are handled) gets a new branch for `group_into_trades`. Same error-handling pattern as the other tools.
+
+### 5. Default behavior change in `ironbeam/sync`
+
+The current `ironbeam/sync` endpoint creates one `OPEN` trade per `(account_id, symbol)` and dumps all fills into it. This is the wrong default. The new default: **flat-to-flat grouping**.
+
+Concretely, replace lines 1305-1335 (`// 2. Create unjournaled ghost executions`) with logic that:
+1. Sorts ghosts by timestamp.
+2. Groups them flat-to-flat (net position cycles to zero).
+3. Creates one `Trade` per group with `status: "CLOSED"` (since the group is complete).
+4. If the final net position is non-zero (a partial day), creates an `OPEN` trade with the remaining executions.
+
+The new helper `applyTradeGrouping` can be reused: feed it the flat-to-flat groups from `ghosts` and call it.
+
+This is a **behavior change** to an existing endpoint. Existing OPEN trades that resulted from the old single-trade-per-symbol behavior are not affected — they stay in the DB. Only NEW sync calls use the new logic.
+
+### 6. System prompt update for grouping
+
+Add to the AI Coach's system prompt (around line 693 in `aiRouter.ts`):
+
+> 6. If the user pastes a statement and asks you to organize the fills, call `group_into_trades` with a proposed grouping. Use flat-to-flat grouping (each sequence of BUYs that net to zero with SELLs becomes its own trade). You may proactively suggest a grouping when the user pastes a large statement: "I see N fills from your statement. I'd group them into M trades. Want me to apply?"
+
+## User Experience
+
+```
+You: [pastes 54-fill statement]
+
+Coach: I see 54 fills from your statement. Looking at the price action, I'd group them into 9 trades:
+       1. SHORT 11:40:48 → 11:46:19 ($+44.50)
+       2. LONG 11:32:01 → 11:40:04 ($+365.50)
+       3. LONG 11:06:56 → 11:31:10 ($-576.50)  ← the 29100 short that doubled down
+       4. SHORT 10:34:45 → 10:41:57 ($+244.50)
+       ... (5 more)
+       
+       Want me to apply this grouping?
+       
+       [tool: group_into_trades(account_id="...", proposal=[9 trade groups])]
+       
+You: yes
+
+Coach: Done. Created 9 trades totaling +$710.00. You can see them in your dashboard.
+```
+
+If the user clicks "Sync" without asking the coach, the default behavior is flat-to-flat (no LLM call, no latency).
+
+## Tests
+
+### `backend/src/services/tradeGrouping.ts` (new)
+
+- `applyTradeGrouping` with 1 group: creates Trade + Executions + MarketContext, returns correct netPnl
+- `applyTradeGrouping` with 9 groups: creates 9 trades, each CLOSED, each with correct bias
+- Rejects a group with non-zero net position (throws or returns error)
+- Computes P&L correctly for LONG vs SHORT
+- Uses `getSymbolMultiplier` for non-MNQ symbols (ES, NQ, etc.)
+- Tags the trade with "AI Coach Grouped" if the grouping came from the coach (vs default sync)
+
+### `backend/src/__tests__/tradeGrouping.test.ts` (new)
+
+Mocked Prisma. At least 8 test cases.
+
+### `backend/src/__tests__/tradesGroupEndpoint.test.ts` (new)
+
+Integration test for the endpoint.
+
+### `ironbeam/sync` behavior change
+
+Existing integration test for `ironbeam/sync` should be updated (or new test added) that verifies the new flat-to-flat grouping behavior. At minimum: a test that pastes 9 fills and verifies 9 Trade rows are created with status CLOSED.
+
+### Default behavior
+
+The old behavior (one OPEN trade per symbol) is gone for new syncs. Document this in the spec acceptance criteria.
+
+## Out of Scope (grouping)
+
+- **Per-symbol session grouping** (the old behavior) is no longer a default. If a user wants it, they can ask the coach to override.
+- **Re-grouping** existing trades (taking a 54-fill OPEN trade and splitting it into 9 CLOSED trades). This is a separate migration problem. Out of scope for v1.
+- **LIFO matching within groups** (matching long entries to short exits by LIFO order). The current `applyLIFOMatching` exists for a different use case; grouping is by flat-to-flat, not by LIFO.
+- **Group-by-time-window** (e.g., "if executions are >30 min apart, force a new group"). Pure flat-to-flat is the spec; time-window heuristics are a follow-up.
+
+## Risk (grouping)
+
+- **LLM proposes a bad grouping** (e.g., includes a non-flat-to-flat group). Mitigation: `applyTradeGrouping` validates each group's net position is zero. If invalid, it returns an error and the user can re-ask.
+- **P&L calc mistakes** (e.g., wrong multiplier). Mitigation: the helper is pure and unit-tested; the LLM only proposes the grouping, it doesn't compute the P&L.
+- **Race condition** if the user clicks Sync and the coach simultaneously. Mitigation: not actually a race; the sync and the coach are independent operations on the same fills. The user can sync first, then ask the coach to re-group (which will create *additional* trades, since the old ones aren't deleted). For v1 this is acceptable; the user can manually clean up.
+- **Default behavior change** to `ironbeam/sync` could surprise users who relied on the old "one OPEN trade per symbol" behavior. Mitigation: document the change in the spec; mention it in the AI Coach's greeting; the orphan reconciliation tool is the migration path for users who want to clean up old OPEN trades.
+
+## Acceptance Criteria (grouping)
+
+- [ ] `applyTradeGrouping` helper passes all unit tests
+- [ ] `POST /api/trades/group` endpoint works
+- [ ] `group_into_trades` is in the coach's tool list
+- [ ] Coach can read a 54-fill statement, propose 9 trades, and call `group_into_trades` to apply
+- [ ] Default `ironbeam/sync` behavior is flat-to-flat (new behavior, replaces old single-trade-per-symbol)
+- [ ] `getSymbolMultiplier` is used (no more hardcoded `* 2`)
+- [ ] Live test: take today's 54 fills, paste into the coach, type "group these into trades", observe 9 Trade rows created with per-trade P&L matching the breakdown in this spec
+
 ## Implementation Plan
 
-Implementation will be dispatched via the `writing-plans` skill (next step), then executed via sub-agents with TDD discipline. Estimated 3-4 sub-agent tasks: schema+helper, endpoint, tool+prompt update, integration test.
+Combined with orphan reconciliation, this is now a 5-6 sub-agent workstream:
+
+1. **Schema** (combine both features): add `is_reconciled`, `reconciled_at`, `reconcile_reason` to `Execution`; migrate
+2. **Helper: `applyOrphanDecision`** with TDD
+3. **Helper: `applyTradeGrouping`** with TDD (also fixes the hardcoded `* 2` if any remains)
+4. **Endpoints**: `POST /api/orphans/reconcile` and `POST /api/trades/group`
+5. **Tool wiring**: add `reconcile_orphan` and `group_into_trades` to the coach's tool list, add prompt update, **fix the missing `execution_id` in the prompt report**
+6. **Default `ironbeam/sync` behavior change**: flat-to-flat grouping (replaces old single-trade-per-symbol)
+7. **Final integration test** with the user's actual data: paste 54 fills, observe coach propose 9 trades, apply, verify DB
