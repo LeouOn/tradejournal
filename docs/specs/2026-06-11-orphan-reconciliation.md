@@ -269,7 +269,7 @@ Integration test for the endpoint:
 - [ ] At least 8 new tests for `applyOrphanDecision` and the endpoint
 - [ ] The reconciliation report in the prompt includes `execution_id` for every orphan
 - [ ] `prisma db push` succeeds with the new columns
-- [ ] Live test: run the analyzer on yesterday's 22 fills + 45 orphans, paste the report into the coach, type "reconcile my orphans", observe the LLM call `reconcile_orphan` for each orphan, verify the DB changes
+- [ ] Live test: paste yesterday's 22-fill statement into the analyzer, observe the 22 ghosts and 45 orphans in the response, type "reconcile my orphans" in the coach, observe the LLM call `reconcile_orphan` for each orphan, verify the DB changes
 
 ## Implementation Plan
 
