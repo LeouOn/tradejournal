@@ -1444,3 +1444,182 @@ Only if needed. Otherwise, skip.
 ```bash
 git push origin main
 ```
+
+---
+
+## Task 8: Trade Correction Tool — `correct_trade` for AI Coach and REST API
+
+**Files:**
+- Modify: `backend/prisma/schema.prisma` (add `correction_reason` field to `Trade`)
+- Create: `backend/src/services/tradeCorrection.ts`
+- Create: `backend/src/__tests__/tradeCorrection.test.ts`
+- Modify: `backend/src/server.ts` (add `PATCH /api/trades/:tradeId/correct` endpoint)
+- Modify: `backend/src/services/aiRouter.ts` (add `correct_trade` tool definition + switch case)
+
+**Motivation:** Today's session exposed a real gap — the FIFO P&L calculation can produce wrong numbers (e.g., +$613.50 when the user knows it was -$1,400), and the user had to ask us to manually run DB scripts to fix it. Both the user and the AI Coach need a way to correct bad logs with an audit trail.
+
+### Design
+
+**New tool: `correct_trade`**
+
+The coach or user can correct any field on a trade: P&L, bias, status, notes, or even split executions between trades. For v1, we support:
+
+- **P&L override**: set `net_pnl` to a manual value, with a reason
+- **Bias correction**: change the bias (LONG/SHORT/RANGE)
+- **Status correction**: change status (OPEN/CLOSED)
+- **Notes append**: append text to the notes field
+
+Every correction stores the old value, new value, reason, and timestamp in the trade's notes for audit.
+
+**New schema field on `Trade`:**
+
+```prisma
+correction_reason String?   // Last correction reason (audit)
+corrected_at      DateTime? // When the last correction was applied
+```
+
+**New helper: `applyTradeCorrection()`**
+
+File: `backend/src/services/tradeCorrection.ts`
+
+```typescript
+export interface TradeCorrectionInput {
+  accountId: string;
+  tradeId: string;
+  corrections: {
+    net_pnl?: number;
+    bias?: "LONG" | "SHORT" | "RANGE";
+    status?: "OPEN" | "CLOSED";
+    notes_append?: string;
+  };
+  reason: string;
+}
+
+export interface TradeCorrectionResult {
+  tradeId: string;
+  correctedFields: string[];
+  reason: string;
+  corrected_at: Date;
+}
+
+export async function applyTradeCorrection(
+  prisma: PrismaClient,
+  input: TradeCorrectionInput
+): Promise<TradeCorrectionResult>
+```
+
+**Semantics:**
+
+1. Fetch the trade, verify it belongs to the account.
+2. For each field in `corrections`, store the old value in an audit string.
+3. Update the trade with the new values.
+4. Append `[CORRECTED YYYY-MM-DD] <reason> | Changed: <field>=<old> → <new>` to `notes`.
+5. Set `correction_reason` and `corrected_at`.
+6. Return the list of corrected fields.
+
+**Endpoint: `PATCH /api/trades/:tradeId/correct`**
+
+```typescript
+app.patch("/api/trades/:tradeId/correct", async (req, res) => {
+  const { tradeId } = req.params;
+  const { accountId, corrections, reason } = req.body;
+  if (!accountId || !reason || !corrections || typeof corrections !== "object") {
+    return res.status(400).json({ error: "accountId, corrections, and reason are required" });
+  }
+  try {
+    const result = await applyTradeCorrection(prisma, { accountId, tradeId, corrections, reason });
+    res.json(result);
+  } catch (error: any) {
+    res.status(500).json({ error: error.message });
+  }
+});
+```
+
+**Tool definition for AI Coach:**
+
+```typescript
+{
+  type: "function" as const,
+  function: {
+    name: "correct_trade",
+    description: "Correct a trade's P&L, bias, status, or notes when the stored values are wrong. Use this when the user points out a bad log — e.g., 'the P&L on that trade is wrong, it was actually -$1400'. Always include a reason explaining why the correction is needed.",
+    parameters: {
+      type: "object",
+      properties: {
+        trade_id: { type: "string", description: "UUID of the trade to correct" },
+        corrections: {
+          type: "object",
+          properties: {
+            net_pnl: { type: "number", description: "Corrected P&L value" },
+            bias: { type: "string", enum: ["LONG", "SHORT", "RANGE"] },
+            status: { type: "string", enum: ["OPEN", "CLOSED"] },
+            notes_append: { type: "string", description: "Text to append to trade notes" },
+          },
+        },
+        reason: { type: "string", description: "Why the correction is needed" },
+      },
+      required: ["trade_id", "corrections", "reason"],
+    },
+  },
+}
+```
+
+**System prompt addition:**
+
+> 10. If the user says a trade's P&L, bias, status, or notes are incorrect, use `correct_trade` to fix it. The user knows their actual trading results better than any automated calculation. Always ask for the correct value before applying.
+
+### Tests
+
+- `applyTradeCorrection` with P&L override: old value stored in notes audit, new value applied
+- `applyTradeCorrection` with bias correction: changes bias, logs old bias
+- `applyTradeCorrection` with status change: OPEN → CLOSED, logs change
+- `applyTradeCorrection` with notes_append: appends to existing notes
+- `applyTradeCorrection` with multiple fields at once
+- Throws if trade not found
+- Throws if trade belongs to different account
+- Throws if no corrections provided
+- Throws if reason is empty
+
+### Steps
+
+- [ ] **Step 1: Add schema fields to Trade model**
+
+Add to `backend/prisma/schema.prisma` in the `Trade` model:
+
+```prisma
+correction_reason String?
+corrected_at      DateTime?
+```
+
+Run: `cd backend && npx prisma db push && npx prisma generate`
+
+- [ ] **Step 2: Write failing tests**
+
+Create `backend/src/__tests__/tradeCorrection.test.ts` with 8 test cases (as listed above).
+
+- [ ] **Step 3: Run tests to verify they fail**
+
+- [ ] **Step 4: Implement `applyTradeCorrection`**
+
+Create `backend/src/services/tradeCorrection.ts`.
+
+- [ ] **Step 5: Run tests to verify they pass**
+
+- [ ] **Step 6: Add endpoint to server.ts**
+
+Add `PATCH /api/trades/:tradeId/correct` with the import.
+
+- [ ] **Step 7: Add tool to aiRouter.ts**
+
+Add `correct_trade` to tools array, add switch case, add system prompt block.
+
+- [ ] **Step 8: Run full test suite**
+
+- [ ] **Step 9: TypeScript check**
+
+- [ ] **Step 10: Commit**
+
+```bash
+git add backend/prisma/schema.prisma backend/src/services/tradeCorrection.ts backend/src/__tests__/tradeCorrection.test.ts backend/src/server.ts backend/src/services/aiRouter.ts
+git commit -m "feat: add correct_trade tool for AI Coach and REST API (audit trail)"
+```
