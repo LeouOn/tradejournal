@@ -31,29 +31,31 @@ model Account {
   daily_charts       DailyChart[]
   weekly_reports     WeeklyReport[]
   coach_observations CoachObservation[]
+  journal_entries    JournalEntry[]
 }
 
 model Trade {
-  trade_id       String          @id @default(uuid())
-  symbol         String
-  status         String          @default("CLOSED") // OPEN, CLOSED
-  manual_status  Boolean         @default(false)
-  net_pnl        Decimal         @default(0.0)
-  r_multiple     Decimal         @default(0.0)
-  duration       Int             @default(0) // In seconds
-  rules_followed Boolean         @default(true)
-  stop_loss      Decimal?
-  notes          String?
-  notes_vector   String? // Comma-separated floats representing embeddings
-  bias           String          @default("RANGE") // LONG, SHORT, RANGE
-  bias_reversal  Boolean         @default(false)
-  trade_type     String          @default("BREAKOUT") // BREAKOUT, RANGE
-  account_id     String
-  account        Account         @relation(fields: [account_id], references: [account_id], onDelete: Cascade)
-  executions     Execution[]
-  trade_tags     TradeTag[]
-  market_context MarketContext[]
-  created_at     DateTime        @default(now())
+  trade_id        String          @id @default(uuid())
+  symbol          String
+  status          String          @default("CLOSED") // OPEN, CLOSED
+  manual_status   Boolean         @default(false)
+  net_pnl         Decimal         @default(0.0)
+  r_multiple      Decimal         @default(0.0)
+  duration        Int             @default(0) // In seconds
+  rules_followed  Boolean         @default(true)
+  stop_loss       Decimal?
+  notes           String?
+  notes_vector    String? // Comma-separated floats representing embeddings
+  bias            String          @default("RANGE") // LONG, SHORT, RANGE
+  bias_reversal   Boolean         @default(false)
+  trade_type      String          @default("BREAKOUT") // BREAKOUT, RANGE
+  account_id      String
+  account         Account         @relation(fields: [account_id], references: [account_id], onDelete: Cascade)
+  executions      Execution[]
+  trade_tags      TradeTag[]
+  market_context  MarketContext[]
+  journal_entries JournalEntry[]
+  created_at      DateTime        @default(now())
 }
 
 model Execution {
@@ -67,11 +69,12 @@ model Execution {
 }
 
 model Tag {
-  tag_id       String     @id @default(uuid())
-  tag_category String // Setup, Emotion, Error
-  tag_name     String     @unique
-  color_code   String
-  trade_tags   TradeTag[]
+  tag_id             String           @id @default(uuid())
+  tag_category       String // Setup, Emotion, Error
+  tag_name           String           @unique
+  color_code         String
+  trade_tags         TradeTag[]
+  journal_entry_tags JournalEntryTag[]
 }
 
 model TradeTag {
@@ -158,4 +161,53 @@ model CoachObservation {
   created_at       DateTime @default(now())
 
   account Account @relation(fields: [account_id], references: [account_id], onDelete: Cascade)
+}
+
+model JournalEntry {
+  entry_id          String           @id @default(uuid())
+  account_id        String
+  trade_id          String?
+  title             String
+  entry_date        DateTime         @default(now())
+  symbol            String?
+  direction         String?
+  size_label        String?
+  duration_label    String?
+  result_label      String?
+  emotional_state   String?
+  context_summary   String?
+  lesson            String?
+  body              String
+  raw_conversation  String           // Immutable JSON snapshot of source messages
+  body_vector       String?          // JSON-stringified floats, populated by embedding service
+  source            String           @default("MANUAL_FORM") // AI_COACH or MANUAL_FORM
+  created_at        DateTime         @default(now())
+  account           Account          @relation(fields: [account_id], references: [account_id], onDelete: Cascade)
+  trade             Trade?           @relation(fields: [trade_id], references: [trade_id], onDelete: SetNull)
+  entry_tags        JournalEntryTag[]
+
+  @@index([account_id])
+  @@index([trade_id])
+  @@index([entry_date])
+}
+
+model JournalEntryTag {
+  entry_tag_id String       @id @default(uuid())
+  entry_id     String
+  tag_id       String
+  entry        JournalEntry @relation(fields: [entry_id], references: [entry_id], onDelete: Cascade)
+  tag          Tag          @relation(fields: [tag_id], references: [tag_id], onDelete: Cascade)
+
+  @@unique([entry_id, tag_id])
+}
+
+model JournalPreview {
+  preview_id         String   @id @default(uuid())
+  token              String   @unique
+  account_id         String
+  proposed_payload   String   // JSON snapshot of candidate entry fields
+  source_message_ids String   // JSON array of message IDs used to build raw conversation
+  expires_at         DateTime
+  consumed_at        DateTime?
+  created_at         DateTime @default(now())
 }
