@@ -19,6 +19,7 @@ import fs from "fs";
 import path from "path";
 import externalApiRouter, { setRegimeUpdater } from "./routes/externalApi";
 import dojoRouter from "./routes/dojo";
+import { journalEntriesRouter } from "./routes/journalEntries";
 import { spawn, exec } from "child_process";
 import cron from "node-cron";
 import { OpenAI } from "openai";
@@ -36,6 +37,9 @@ app.use(cors());
 app.use(express.json({ limit: "50mb" }));
 app.use(express.urlencoded({ limit: "50mb", extended: true }));
 
+// Attach Prisma client to requests for routers that use req.prisma
+app.use((req: any, _res, next) => { req.prisma = prisma; next(); });
+
 const uploadsDir = path.join(process.cwd(), "uploads");
 if (!fs.existsSync(uploadsDir)) {
   fs.mkdirSync(uploadsDir);
@@ -47,6 +51,8 @@ app.use("/api/external", externalApiRouter);
 
 // Wire up the Dojo router
 app.use("/api/dojo", dojoRouter);
+
+app.use("/api/journal-entries", journalEntriesRouter);
 
 // Active WebSocket connections
 const clients = new Set<WebSocket>();
