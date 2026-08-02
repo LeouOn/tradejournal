@@ -4,6 +4,7 @@ import dotenv from "dotenv";
 import { calculateMetrics } from "../utils/metrics";
 import { updateTradeCalculations } from "../server";
 import { applyLIFOMatching } from "../utils/matchingEngines";
+import { searchJournalEntries, getRecentStandaloneReflections } from "./journalEmbedding";
 
 dotenv.config();
 
@@ -237,6 +238,17 @@ Trader Notes: "${t.notes}"`;
     }
   }
 
+  // 3. Augment with semantic matches and recent standalone reflections from the journal
+  const journalMatches = await searchJournalEntries(prisma, { embed: generateEmbedding }, accountId, userQuery, 5).catch(() => []);
+  const recentReflections = await getRecentStandaloneReflections(prisma, accountId, 5).catch(() => []);
+  const journalSection = [
+    recentReflections.length ? `Recent standalone reflections:\n${recentReflections.map((e) => `- ${e.entry_date.toISOString().slice(0, 10)}: ${e.body}`).join("\n")}` : "",
+    journalMatches.length ? `Semantically related journal entries:\n${journalMatches.map((e) => `- ${e.title}: ${e.body}`).join("\n")}` : "",
+  ].filter(Boolean).join("\n\n");
+  if (journalSection) {
+    notesContext = `${notesContext}\n\n${journalSection}`;
+  }
+
   return { statsText, notesContext };
 }
 
@@ -315,6 +327,34 @@ const recordObservationTool = {
         related_trade_id: { type: "string", description: "Optional trade UUID if it applies to a specific trade" }
       },
       required: ["type", "content", "severity"]
+    }
+  }
+};
+
+const createJournalEntryTool = {
+  type: "function" as const,
+  function: {
+    name: "create_journal_entry",
+    description: "Propose a narrative journal entry. This returns a preview to the user; nothing is persisted until they confirm.",
+    parameters: {
+      type: "object",
+      properties: {
+        trade_id:         { type: "string" },
+        title:            { type: "string" },
+        entry_date:       { type: "string", format: "date-time" },
+        symbol:           { type: "string" },
+        direction:        { type: "string", enum: ["LONG", "SHORT"] },
+        size_label:       { type: "string" },
+        duration_label:   { type: "string" },
+        result_label:     { type: "string" },
+        emotional_state:  { type: "string" },
+        context_summary:  { type: "string" },
+        lesson:           { type: "string" },
+        body:             { type: "string" },
+        source_message_ids: { type: "array", items: { type: "string" } },
+        tags:             { type: "array", items: { type: "string" } }
+      },
+      required: ["title", "body"]
     }
   }
 };
@@ -772,7 +812,14 @@ ${reconciliationReportText}
       ],
       temperature: 0.3,
       stream: true,
-      tools: [logTradeTool, renderUiTool, recordObservationTool, tagTradeTool, toggleLensTool],
+      tools: [
+        logTradeTool,
+        renderUiTool,
+        recordObservationTool,
+        tagTradeTool,
+        toggleLensTool,
+        ...(process.env.ENABLE_JOURNALING === "false" ? [] : [createJournalEntryTool]),
+      ],
       max_tokens: 8192,
     });
 
@@ -891,6 +938,23 @@ ${reconciliationReportText}
               onToken(msgTag);
             }
             break;
+
+          case "create_journal_entry": {
+            const previewRes = await fetch(`http://localhost:${process.env.PORT || 5000}/api/coach/journal/preview`, {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({
+                accountId,
+                payload: args,
+                sourceMessageIds: args.source_message_ids ?? [],
+              }),
+            });
+            const preview = await previewRes.json() as any;
+            const widget = `\n\n[JOURNAL_PROPOSAL: ${JSON.stringify({ ...preview, payload: args })}]\n\n`;
+            fullText += widget;
+            onToken(widget);
+            break;
+          }
 
           default:
             console.warn("Unknown tool call executed:", toolCall.name);
