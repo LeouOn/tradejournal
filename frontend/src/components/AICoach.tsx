@@ -6,6 +6,7 @@ import { useSettings } from "../contexts/SettingsContext";
 import ChatSessionSidebar, { type ChatSession } from "./ChatSessionSidebar";
 import ContextMenu from "./ContextMenu";
 import SystemSummaryCard from "./SystemSummaryCard";
+import JournalProposalCard from "./JournalProposalCard";
 import { deserializeContextFlags, serializeContextFlags, type ContextFlags } from "../lib/contextFlags";
 
 interface Message {
@@ -663,7 +664,7 @@ export default function AICoach({ accountId, onRefreshTrades, compact = false, i
                       </div>
                     ) : (
                       <div>
-                        {m.content.split(/(\[WIDGET:\s*\{.*?\}\s*\]|\[LENS_TOGGLE:\s*\{.*?\}\s*\])/g).map((part, i) => {
+                        {m.content.split(/(\[WIDGET:\s*\{.*?\}\s*\]|\[LENS_TOGGLE:\s*\{.*?\}\s*\]|\[JOURNAL_PROPOSAL:\s*\{.*?\}\s*\])/g).map((part, i) => {
                           if (part.startsWith("[WIDGET:")) {
                             try {
                               const jsonStr = part.replace("[WIDGET:", "").replace(/\]$/, "").trim();
@@ -700,7 +701,7 @@ export default function AICoach({ accountId, onRefreshTrades, compact = false, i
                             try {
                               const jsonStr = part.replace("[LENS_TOGGLE:", "").replace(/\]$/, "").trim();
                               const obj = JSON.parse(jsonStr);
-                              
+
                               if (onToggleEngine) {
                                 setTimeout(() => {
                                   onToggleEngine(obj.engine);
@@ -708,11 +709,11 @@ export default function AICoach({ accountId, onRefreshTrades, compact = false, i
                               }
 
                               return (
-                                <div key={i} style={{ 
-                                  marginTop: "10px", 
-                                  padding: "12px", 
-                                  background: "rgba(52, 211, 153, 0.15)", 
-                                  borderRadius: "8px", 
+                                <div key={i} style={{
+                                  marginTop: "10px",
+                                  padding: "12px",
+                                  background: "rgba(52, 211, 153, 0.15)",
+                                  borderRadius: "8px",
                                   border: "1px solid var(--accent-green)",
                                   display: "flex",
                                   alignItems: "center",
@@ -724,6 +725,26 @@ export default function AICoach({ accountId, onRefreshTrades, compact = false, i
                                     <span style={{ fontSize: "0.75rem", color: "var(--text-secondary)" }}>The backend engine is now filtering your data via: {obj.engine}</span>
                                   </div>
                                 </div>
+                              );
+                            } catch (e) {
+                              return <span key={i}>{part}</span>;
+                            }
+                          } else if (part.startsWith("[JOURNAL_PROPOSAL:")) {
+                            try {
+                              const jsonStr = part.replace("[JOURNAL_PROPOSAL:", "").replace(/\]$/, "").trim();
+                              const data = JSON.parse(jsonStr);
+                              return (
+                                <JournalProposalCard
+                                  key={i}
+                                  accountId={accountId}
+                                  token={data.token}
+                                  payload={data.payload}
+                                  onResolved={(entry) => {
+                                    if (entry) {
+                                      setMessages((prev) => [...prev, { role: "assistant" as const, content: `📌 Saved journal entry: ${entry.title}` }]);
+                                    }
+                                  }}
+                                />
                               );
                             } catch (e) {
                               return <span key={i}>{part}</span>;
