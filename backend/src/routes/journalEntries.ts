@@ -6,6 +6,7 @@ import {
   updateJournalEntry,
   deleteJournalEntry,
 } from "../services/journalEntry";
+import { embedJournalEntryBody } from "../services/journalEmbedding";
 
 export async function listJournalEntriesHandler(req: any, res: any) {
   const { accountId, tradeId, symbol, source, tag, from, to } = req.query;
@@ -25,6 +26,14 @@ export async function createJournalEntryHandler(req: any, res: any) {
   const { accountId, ...payload } = req.body;
   if (!accountId || !payload.title || !payload.body) return res.status(400).json({ error: "accountId, title, and body required" });
   const entry = await createJournalEntry(req.prisma, accountId, { ...payload, source: payload.source ?? "MANUAL_FORM" });
+
+  // Best-effort embedding; failure does not block persistence
+  try {
+    await embedJournalEntryBody(req.prisma, req.embedder, entry.entry_id, entry.body);
+  } catch (e) {
+    console.warn("journal embedding failed:", e);
+  }
+
   res.json(entry);
 }
 
