@@ -620,7 +620,7 @@ const FIFTEEN_MINUTES_MS = 15 * 60 * 1000;
 export async function createPreview(prisma: PrismaClient, accountId: string, payload: unknown, sourceMessageIds: string[]) {
   const expiresAt = new Date(Date.now() + FIFTEEN_MINUTES_MS);
   const token = randomUUID();
-  await prisma.journalPreview.create({
+  const created = await prisma.journalPreview.create({
     data: {
       token,
       account_id: accountId,
@@ -629,7 +629,7 @@ export async function createPreview(prisma: PrismaClient, accountId: string, pay
       expires_at: expiresAt,
     },
   });
-  return { token, expiresAt };
+  return { token: created.token, expiresAt };
 }
 
 export async function consumePreview(prisma: PrismaClient, token: string, accountId: string) {
@@ -701,19 +701,28 @@ import {
   deleteJournalEntryHandler,
 } from "../routes/journalEntries";
 
-// Reuse the mock-prisma pattern from chatSession.test.ts
+// Reuse the mock-prisma pattern from journalEntry.test.ts (Task 2):
+// the create/update services wrap writes in prisma.$transaction, so the mock
+// must implement $transaction by invoking the callback with itself, and must
+// expose findUniqueOrThrow (post-write re-fetch) + tag.upsert (ensureTag).
 function createMockPrisma() {
-  return {
-    journalEntry: {
-      create: jest.fn().mockResolvedValue({ entry_id: "e1" }),
-      findMany: jest.fn().mockResolvedValue([{ entry_id: "e1" }]),
-      findUnique: jest.fn().mockResolvedValue({ entry_id: "e1" }),
-      update: jest.fn().mockResolvedValue({ entry_id: "e1" }),
-      delete: jest.fn().mockResolvedValue(undefined),
-    },
-    tag: { findUnique: jest.fn().mockResolvedValue(null), create: jest.fn() },
-    journalEntryTag: { deleteMany: jest.fn(), create: jest.fn() },
-  } as any;
+  const journalEntry = {
+    create: jest.fn().mockResolvedValue({ entry_id: "e1" }),
+    findMany: jest.fn().mockResolvedValue([{ entry_id: "e1" }]),
+    findUnique: jest.fn().mockResolvedValue({ entry_id: "e1" }),
+    findUniqueOrThrow: jest.fn().mockResolvedValue({ entry_id: "e1" }),
+    update: jest.fn().mockResolvedValue({ entry_id: "e1" }),
+    delete: jest.fn().mockResolvedValue(undefined),
+  };
+  const tag = {
+    findUnique: jest.fn().mockResolvedValue(null),
+    create: jest.fn(),
+    upsert: jest.fn().mockResolvedValue({ tag_id: "t1", tag_name: "x" }),
+  };
+  const journalEntryTag = { deleteMany: jest.fn(), create: jest.fn() };
+  const prisma: any = { journalEntry, tag, journalEntryTag };
+  prisma.$transaction = jest.fn(async (fn: any) => fn(prisma));
+  return prisma as any;
 }
 
 function mockRes() {
@@ -848,17 +857,27 @@ journalEntriesRouter.patch("/:entryId", updateJournalEntryHandler);
 journalEntriesRouter.delete("/:entryId", deleteJournalEntryHandler);
 ```
 
-- [ ] **Step 4: Mount the router in `server.ts`**
+- [ ] **Step 4: Mount the router in `server.ts` and wire `req.prisma`**
 
-In `backend/src/server.ts`, after the existing route mounts (search for `app.use(`), add:
+The existing routers do NOT populate `req.prisma` — each instantiates its own PrismaClient (see `externalApi.ts:8`). The journal routers consume `req.prisma` (so handlers stay unit-testable with mock req/res). In `backend/src/server.ts`:
 
+1. Add the import near the other route imports (after line 21):
 ```typescript
 import { journalEntriesRouter } from "./routes/journalEntries";
-// ...
+```
+
+2. Add a request-scoped middleware that attaches the existing `prisma` instance (defined at line 32) BEFORE the route mounts (after line 37, before the `/api/external` mount):
+```typescript
+// Attach Prisma client to requests for routers that use req.prisma
+app.use((req: any, _res, next) => { req.prisma = prisma; next(); });
+```
+
+3. Mount the router next to the other API routers (after line 49):
+```typescript
 app.use("/api/journal-entries", journalEntriesRouter);
 ```
 
-Confirm `req.prisma` is already populated by existing middleware; otherwise wire `app.use((req, _res, next) => { req.prisma = prisma; next(); })` in the same place the existing routers do it.
+Verify the middleware is registered before any route that needs `req.prisma` (it must run before `/api/journal-entries` and `/api/coach/journal` mounts).
 
 - [ ] **Step 5: Run tests, expect pass**
 
@@ -1000,17 +1019,28 @@ journalCoachRouter.post("/preview", previewJournalEntryHandler);
 journalCoachRouter.post("/confirm", confirmJournalEntryHandler);
 ```
 
-- [ ] **Step 4: Mount the router in `server.ts`**
+- [ ] **Step 4: Mount the router in `server.ts` and wire `req.embedder`**
 
-In `backend/src/server.ts`, alongside the other coach routes (search for existing coach route mounts), add:
+In `backend/src/server.ts`:
 
+1. Add the import near the other route imports:
 ```typescript
 import { journalCoachRouter } from "./routes/journalCoach";
-// ...
-app.use("/api/coach/journal", journalCoachRouter);
 ```
 
-If the existing app passes an `embedder` to other routes, expose it on the request similarly (e.g., `req.embedder = …`).
+2. The confirm handler calls `embedJournalEntryBody(req.prisma, req.embedder, ...)`. The app does NOT currently pass an embedder to routes. Extend the existing `req.prisma` middleware (added in Task 5) to also attach the embedder. `generateEmbedding` is already imported in `server.ts` (line 7: `import { generateEmbedding, streamAICoach, getAvailableModels } from "./services/aiRouter";`). Change the Task 5 middleware from:
+```typescript
+app.use((req: any, _res, next) => { req.prisma = prisma; next(); });
+```
+to:
+```typescript
+app.use((req: any, _res, next) => { req.prisma = prisma; req.embedder = { embed: generateEmbedding }; next(); });
+```
+
+3. Mount the router next to the other API routers:
+```typescript
+app.use("/api/coach/journal", journalCoachRouter);
+```
 
 - [ ] **Step 5: Run tests, expect pass**
 
@@ -1151,16 +1181,19 @@ git commit -m "feat(coach): register create_journal_entry tool, expand RAG to jo
 ## Task 8: Frontend API Wrappers
 
 **Files:**
-- Modify: `frontend/src/lib/api.ts`
+- Create: `frontend/src/lib/api.ts` (NOTE: this file does not exist yet — the frontend currently uses inline `fetch("http://localhost:5000/...")` calls everywhere, see `App.tsx` and `AICoach.tsx`. This task creates the shared wrapper module.)
 
 **Interfaces:**
-- Produces: typed `listJournalEntries`, `createJournalEntry`, `getJournalEntry`, `updateJournalEntry`, `deleteJournalEntry`, `previewJournalEntry`, `confirmJournalEntry`.
+- Produces: typed `JournalEntry` interface + `listJournalEntries`, `createJournalEntry`, `getJournalEntry`, `updateJournalEntry`, `deleteJournalEntry`, `previewJournalEntry`, `confirmJournalEntry`.
+- The module defines `const API_BASE = "http://localhost:5000";` matching the codebase's hardcoded base URL convention.
 
-- [ ] **Step 1: Add wrappers**
+- [ ] **Step 1: Create the wrapper module**
 
-Append to `frontend/src/lib/api.ts`:
+Create `frontend/src/lib/api.ts` with the wrappers:
 
 ```typescript
+const API_BASE = "http://localhost:5000";
+
 export interface JournalEntry {
   entry_id: string;
   account_id: string;
@@ -1181,7 +1214,7 @@ export interface JournalEntry {
   source: string;
   created_at: string;
   entry_tags?: { tag: { tag_id: string; tag_name: string } }[];
-  trade?: Trade | null;
+  trade?: { trade_id: string; symbol: string; net_pnl: string } | null;
 }
 
 export const listJournalEntries = (params: Record<string, string | number | undefined>) =>
@@ -1498,7 +1531,7 @@ export default function JournalProposalCard({ accountId, token, payload, onResol
   }
 
   return (
-    <div className="card" style={{ padding: 12, display: "grid", gap: 8 }}>
+    <div className="glass-panel" style={{ padding: 12, display: "grid", gap: 8 }}>
       <strong>Journal entry proposed by AI coach</strong>
       <div style={{ fontWeight: 600 }}>{payload.title}</div>
       <pre style={{ whiteSpace: "pre-wrap", fontFamily: "inherit", maxHeight: 200, overflow: "auto" }}>{payload.body}</pre>
@@ -1516,32 +1549,48 @@ export default function JournalProposalCard({ accountId, token, payload, onResol
 
 - [ ] **Step 2: Hook it into `AICoach`**
 
-In `frontend/src/components/AICoach.tsx`, find the block that parses widget tokens (e.g. `[WIDGET: …]`) and add a parallel handler for `[JOURNAL_PROPOSAL: …]`:
+`AICoach.tsx` renders widget tokens by splitting `m.content` with a regex and mapping parts (verified at line 666: `m.content.split(/(\[WIDGET:\s*\{.*?\}\s*\]|\[LENS_TOGGLE:\s*\{.*?\}\s*\])/g).map((part, i) => {`). Three edits:
 
-```tsx
-if (text.startsWith("[JOURNAL_PROPOSAL:")) {
-  const json = text.replace("[JOURNAL_PROPOSAL:", "").replace(/]$/, "").trim();
-  const data = JSON.parse(json);
-  return (
-    <JournalProposalCard
-      accountId={accountId}
-      token={data.token}
-      payload={data.payload}
-      onResolved={(entry) => {
-        if (entry) onCoachMessage(`📌 Saved journal entry: ${entry.title}`);
-      }}
-    />
-  );
-}
-```
-
-Add the import at the top:
-
+1. Add the import at the top (near the other component imports):
 ```tsx
 import JournalProposalCard from "./JournalProposalCard";
 ```
 
-(Adapt the surrounding markup to match the existing AICoach message-rendering flow  Ekeep the styling consistent with existing widgets.)
+2. Extend the split regex at line 666 to also capture journal proposal tokens:
+```tsx
+{m.content.split(/(\[WIDGET:\s*\{.*?\}\s*\]|\[LENS_TOGGLE:\s*\{.*?\}\s*\]|\[JOURNAL_PROPOSAL:\s*\{.*?\}\s*\])/g).map((part, i) => {
+```
+
+3. Add an `else if` branch for `[JOURNAL_PROPOSAL:` after the existing `[LENS_TOGGLE:` branch (around line 731, before the final `return <span key={i}>{part}</span>;`):
+```tsx
+} else if (part.startsWith("[JOURNAL_PROPOSAL:")) {
+  try {
+    const jsonStr = part.replace("[JOURNAL_PROPOSAL:", "").replace(/\]$/, "").trim();
+    const data = JSON.parse(jsonStr);
+    return (
+      <JournalProposalCard
+        key={i}
+        accountId={accountId}
+        token={data.token}
+        payload={data.payload}
+        onResolved={(entry) => {
+          if (entry) {
+            setMessages((prev) => [...prev, { role: "assistant" as const, content: `📌 Saved journal entry: ${entry.title}` }]);
+          }
+        }}
+      />
+    );
+  } catch (e) {
+    return <span key={i}>{part}</span>;
+  }
+}
+```
+
+Notes for the implementer:
+- The `accountId` prop is available in AICoach's component scope (it is a prop of AICoach).
+- There is NO `onCoachMessage` callback in this component — messages are managed by `setMessages` (the state setter from `useState<Message[]>` at line 41, with `Message` interface at lines 11-17: `{ role: "user" | "assistant"; content: string; ... }`). Use the `setMessages((prev) => [...prev, ...])` form shown above.
+- `data.payload` contains the candidate journal fields (title, body, context_summary, lesson, tags as string[], etc.); `data.token` is the preview token.
+- Keep the styling consistent with the existing WIDGET/LENS_TOGGLE branches (var-based styling, glass-panel).
 
 - [ ] **Step 3: TypeScript build check**
 
