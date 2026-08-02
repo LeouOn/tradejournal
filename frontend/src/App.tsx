@@ -12,6 +12,7 @@ import MarketAnalysis from "./components/MarketAnalysis";
 import type { RegimeData } from "./components/MarketAnalysis";
 import Playbooks from "./components/Playbooks";
 import { TrainingDojo } from "./components/TrainingDojo";
+import JournalListPage from "./components/JournalListPage";
 import { useSettings } from "./contexts/SettingsContext";
 import { useToast } from "./contexts/ToastContext";
 
@@ -178,6 +179,7 @@ export default function App() {
            <button className="btn-secondary" onClick={() => { setActiveCanvasComponent("PerformanceCharts"); setIsMenuOpen(false); }}>Charts</button>
            <button className="btn-secondary" onClick={() => { setActiveCanvasComponent("Calendar"); setIsMenuOpen(false); }}>Calendar</button>
            <button className="btn-secondary" onClick={() => { setActiveCanvasComponent("Playbooks"); setIsMenuOpen(false); }}>Playbooks</button>
+           <button className="btn-secondary" onClick={() => { setActiveCanvasComponent("Journal"); setIsMenuOpen(false); }}>Journal</button>
            <button className="btn-secondary" onClick={() => { setActiveCanvasComponent("TrainingDojo"); setIsMenuOpen(false); }}>Training Dojo</button>
            <button className="btn-secondary" onClick={() => { setActiveCanvasComponent("Settings"); setIsMenuOpen(false); }}>Settings</button>
         </div>
@@ -329,6 +331,10 @@ export default function App() {
                   trades={trades} 
                   onRefreshTrades={loadDashboardData} 
                 />
+              )}
+
+              {activeCanvasComponent === "Journal" && (
+                <JournalListPage accountId={accountId} />
               )}
 
               {activeCanvasComponent === "TrainingDojo" && (
