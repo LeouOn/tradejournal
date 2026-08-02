@@ -13,3 +13,7 @@ frontend/dist/
 # Databases
 *.db
 *.db-journal
+
+# Agent tooling scratch
+.omo/
+
