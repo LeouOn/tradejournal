@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { createJournalEntry, JournalEntry } from "../lib/api";
+import { createJournalEntry, type JournalEntry } from "../lib/api";
 
 interface Props {
   accountId: string;

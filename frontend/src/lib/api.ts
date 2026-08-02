@@ -26,7 +26,7 @@ export interface JournalEntry {
 export const listJournalEntries = (params: Record<string, string | number | undefined>) =>
   fetch(`${API_BASE}/api/journal-entries?${new URLSearchParams(params as any)}`).then((r) => r.json());
 
-export const createJournalEntry = (payload: Partial<JournalEntry> & { accountId: string }) =>
+export const createJournalEntry = (payload: Partial<JournalEntry> & { accountId: string; tags?: string[] }) =>
   fetch(`${API_BASE}/api/journal-entries`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },

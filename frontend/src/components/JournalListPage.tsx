@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { listJournalEntries, JournalEntry } from "../lib/api";
+import { listJournalEntries, type JournalEntry } from "../lib/api";
 import JournalComposer from "./JournalComposer";
 import JournalEntryView from "./JournalEntryView";
 

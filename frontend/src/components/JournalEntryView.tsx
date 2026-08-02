@@ -1,4 +1,4 @@
-import { JournalEntry } from "../lib/api";
+import type { JournalEntry } from "../lib/api";
 
 export default function JournalEntryView({ entry, onClose }: { entry: JournalEntry; onClose: () => void }) {
   return (

@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { confirmJournalEntry, JournalEntry } from "../lib/api";
+import { confirmJournalEntry, type JournalEntry } from "../lib/api";
 import JournalComposer from "./JournalComposer";
 
 interface Props {

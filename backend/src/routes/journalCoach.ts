@@ -4,6 +4,7 @@ import { createJournalEntry } from "../services/journalEntry";
 import { embedJournalEntryBody } from "../services/journalEmbedding";
 
 export async function previewJournalEntryHandler(req: any, res: any) {
+  if (process.env.ENABLE_JOURNALING === "false") return res.status(404).json({ error: "disabled" });
   const { accountId, payload, sourceMessageIds } = req.body;
   if (!accountId || !payload) return res.status(400).json({ error: "accountId and payload required" });
   const { token, expiresAt } = await createPreview(req.prisma, accountId, payload, sourceMessageIds ?? []);
@@ -11,6 +12,7 @@ export async function previewJournalEntryHandler(req: any, res: any) {
 }
 
 export async function confirmJournalEntryHandler(req: any, res: any) {
+  if (process.env.ENABLE_JOURNALING === "false") return res.status(404).json({ error: "disabled" });
   const { accountId, token, edits } = req.body;
   if (!accountId || !token) return res.status(400).json({ error: "accountId and token required" });
 
